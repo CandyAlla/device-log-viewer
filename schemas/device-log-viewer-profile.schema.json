@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.dev/device-log-viewer-profile.schema.json",
+  "title": "Device Log Viewer Profile",
+  "description": "Project-specific defaults for the local Device Log Viewer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "displayName",
+    "defaultPort",
+    "apps",
+    "analytics"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$"
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "defaultPort": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 65525
+    },
+    "apps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["android", "ios"],
+      "properties": {
+        "android": {
+          "$ref": "#/$defs/appPlatform"
+        },
+        "ios": {
+          "$ref": "#/$defs/appPlatform"
+        }
+      }
+    },
+    "analytics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "marker", "parser", "platforms"],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "marker": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "parser": {
+          "enum": ["plain", "gamefoundation-eventlog"]
+        },
+        "platforms": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "marker": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "appId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_-]+)+$"
+    },
+    "appPlatform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default", "presets"],
+      "properties": {
+        "default": {
+          "oneOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/$defs/appId"
+            }
+          ]
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/appId"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id"],
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/appId"
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

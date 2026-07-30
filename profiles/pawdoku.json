@@ -1,0 +1,38 @@
+{
+  "$schema": "../schemas/device-log-viewer-profile.schema.json",
+  "schemaVersion": 1,
+  "id": "pawdoku",
+  "displayName": "Pawdoku Device Logs",
+  "defaultPort": 8765,
+  "apps": {
+    "android": {
+      "default": "com.pawdoku.puzzle.game",
+      "presets": [
+        {
+          "id": "com.pawdoku.puzzle.game",
+          "label": "Pawdoku Android"
+        }
+      ]
+    },
+    "ios": {
+      "default": "com.pawdoku.puzzle",
+      "presets": [
+        {
+          "id": "com.pawdoku.puzzle",
+          "label": "Pawdoku iOS"
+        }
+      ]
+    }
+  },
+  "analytics": {
+    "enabled": true,
+    "marker": "[EventLog]:",
+    "parser": "gamefoundation-eventlog",
+    "platforms": [
+      "Firebase",
+      "Facebook",
+      "Adjust",
+      "AppsFlyer"
+    ]
+  }
+}

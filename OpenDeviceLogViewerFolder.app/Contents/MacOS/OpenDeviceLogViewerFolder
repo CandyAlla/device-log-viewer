@@ -1,0 +1,6 @@
+#!/bin/zsh
+set -eu
+
+helper_bundle="${0:A:h:h:h}"
+viewer_dir="${helper_bundle:h}"
+exec /usr/bin/open "$viewer_dir"

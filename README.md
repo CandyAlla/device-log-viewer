@@ -1,0 +1,339 @@
+# Device Log Viewer
+
+一个运行在本机浏览器中的 Android / iOS 日志查看与装包工具。
+
+它把 `adb logcat`、iOS 控制台、App 筛选、埋点筛选、安装包安装和日志下载集中在一个页面中。工具本身不依赖 Unity 或某个具体项目；项目名称、Android 包名、iOS Bundle ID、埋点格式和默认端口都由 Profile JSON 配置。
+
+## 主要功能
+
+- 实时查看 Android、iOS 模拟器和 iPhone/iPad 真机日志。
+- Android 可只看指定 App；App 被杀后仍保持 Logcat 连接，重新启动 App 时自动跟踪新 PID。
+- 自动读取设备上已安装的第三方 App，也支持手动输入包名或 Bundle ID。
+- 按关键词及 `V / D / I / W / E / F` 日志级别筛选。
+- 按 Profile 中的标记筛选埋点，并把支持的埋点格式显示成事件卡片。
+- 暂停页面显示、自动滚动、清空页面或清空 Android Logcat 缓冲区。
+- 将当前筛选结果下载为 UTF-8 编码的 TXT 文件。
+- 拖入本地 APK，安装到指定 Android 设备。
+- 通过 FIR 分发链接或直接 APK 地址下载并安装 Android App。
+- 通过 iOS 分发链接下载并安装 IPA 到指定 iPhone/iPad。
+- 页面内可直接打开工具所在文件夹，不依赖日志服务运行状态。
+
+页面最多保留最近 20,000 行。服务默认只监听 `127.0.0.1`，不会把设备日志暴露给局域网。
+
+## 运行环境
+
+| 功能 | 依赖 |
+| --- | --- |
+| 基础页面与服务 | macOS、Python 3.9+；无需第三方 Python 包 |
+| Android 日志与装包 | Android Platform Tools（`adb`） |
+| iOS 日志与装包 | 完整版 Xcode（`xcrun simctl`、`devicectl`） |
+| 远程链接安装 | 无需登录即可访问的公网 HTTP(S) 分发地址 |
+
+Unity 项目不是运行依赖。只有随附的 Profile 生成器会只读扫描 Unity `ProjectSettings` 和源码中的埋点标记。
+
+## 快速开始
+
+### 1. 下载工具
+
+克隆仓库：
+
+```bash
+git clone <repository-url>
+cd DeviceLogViewer
+```
+
+也可以从 GitHub 下载 ZIP。若可执行权限丢失，运行：
+
+```bash
+chmod +x start.command
+chmod +x OpenDeviceLogViewerFolder.app/Contents/MacOS/OpenDeviceLogViewerFolder
+```
+
+### 2. 准备设备
+
+Android：
+
+1. 在设备上开启开发者选项和 USB 调试。
+2. 连接设备并在授权弹窗中点击“允许”。
+3. 可通过 `adb devices` 确认设备状态为 `device`。
+
+iOS：
+
+1. 安装并至少启动过一次 Xcode。
+2. 真机需要解锁、信任当前 Mac，并开启开发者模式。
+3. 先在 Xcode 的 **Devices and Simulators** 中确认设备可见。
+
+### 3. 启动
+
+双击 `start.command`，或在终端运行：
+
+```bash
+./start.command
+```
+
+默认使用中性配置 [`profiles/default.json`](profiles/default.json)。页面打开后，选择日志来源、设备和 App，再点击“开始”。
+
+使用指定项目的 Profile：
+
+```bash
+./start.command profiles/pawdoku.json
+```
+
+也可以直接启动 Python 服务：
+
+```bash
+python3 server.py --profile profiles/pawdoku.json
+```
+
+浏览器默认打开 <http://127.0.0.1:8765>。终端中按 `Ctrl+C` 停止服务。
+
+重复启动相同版本和 Profile 时，会直接打开现有页面；切换 Profile 或工具版本时，会自动重启同目录中的旧服务。
+
+## 页面使用方法
+
+### 查看日志
+
+1. 选择 `Android`、`iOS 模拟器` 或 `iPhone / iPad`。
+2. 选择目标设备。
+3. 如果只想查看某个 App，保持“仅指定 App”勾选并选择 App。
+4. 点击“开始”。
+
+Android 指定 App 模式不会因为 App 进程被杀而断开 Logcat。页面会等待 App 再次启动，并自动连接新的 PID。
+
+iOS 模拟器指定 App 模式和 iPhone/iPad 真机模式，需要通过 Xcode 命令行工具启动或重启 App 才能连接其控制台。
+
+### 筛选与下载
+
+- 在搜索框中输入关键词、Tag 或进程名。
+- 勾选或取消日志级别。
+- Profile 启用埋点功能时，可勾选“只看埋点”。
+- “暂停显示”只停止页面刷新，后台仍继续接收日志。
+- “下载 TXT”保存当前筛选结果，不会改写原始日志文本。
+
+### 安装 Android APK
+
+1. 选择 Android 设备。
+2. 停止正在进行的日志采集。
+3. 将 APK 拖入页面，或粘贴 FIR/直接 APK 链接。
+4. 点击安装并确认目标设备。
+
+工具会校验 APK，并通过 `adb install -r` 覆盖安装。远程下载的临时文件会在安装结束后删除。
+
+### 安装 iOS App
+
+1. 选择 `iPhone / iPad` 和目标真机。
+2. 停止正在进行的日志采集。
+3. 粘贴可公开访问的 iOS 分发链接。
+4. 点击“下载并安装”。
+
+企业签名或 Ad Hoc 签名必须有效；Ad Hoc 包还必须包含目标设备的 UDID。安装过程中请保持设备解锁。
+
+## Profile 配置
+
+Profile 的完整结构由 [`schemas/device-log-viewer-profile.schema.json`](schemas/device-log-viewer-profile.schema.json) 定义。
+
+最小示例：
+
+```json
+{
+  "$schema": "../schemas/device-log-viewer-profile.schema.json",
+  "schemaVersion": 1,
+  "id": "sample-game",
+  "displayName": "Sample Game Device Logs",
+  "defaultPort": 8765,
+  "apps": {
+    "android": {
+      "default": "com.example.game",
+      "presets": [
+        { "id": "com.example.game", "label": "Sample Game Android" }
+      ]
+    },
+    "ios": {
+      "default": "com.example.game",
+      "presets": [
+        { "id": "com.example.game", "label": "Sample Game iOS" }
+      ]
+    }
+  },
+  "analytics": {
+    "enabled": true,
+    "marker": "[EventLog]:",
+    "parser": "gamefoundation-eventlog",
+    "platforms": ["Firebase", "Facebook", "Adjust", "AppsFlyer"]
+  }
+}
+```
+
+常用字段：
+
+| 字段 | 作用 |
+| --- | --- |
+| `id` | Profile 的稳定标识，只能使用小写字母、数字、点、下划线和连字符 |
+| `displayName` | 浏览器标题及页面左上角名称 |
+| `defaultPort` | 启动器首先尝试的本机端口 |
+| `apps.android.default` | 默认 Android 包名，可留空 |
+| `apps.ios.default` | 默认 iOS Bundle ID，可留空 |
+| `apps.*.presets` | 页面优先展示的 App 列表和名称 |
+| `analytics.enabled` | 是否显示“只看埋点”功能 |
+| `analytics.marker` | 用于识别埋点日志的字符串，匹配时忽略大小写 |
+| `analytics.parser` | `plain` 或 `gamefoundation-eventlog` |
+| `analytics.platforms` | GameFoundation 解析器接受的平台前缀 |
+
+仓库内包含：
+
+- [`profiles/default.json`](profiles/default.json)：无项目依赖的基础配置。
+- [`profiles/pawdoku.json`](profiles/pawdoku.json)：Pawdoku 示例配置。
+
+验证 Profile：
+
+```bash
+python3 server.py --profile profiles/pawdoku.json --print-profile-id
+python3 server.py --profile profiles/pawdoku.json --print-port
+```
+
+## 为 Unity 项目生成 Profile
+
+生成器只读扫描项目，不会修改 Unity 工程：
+
+```bash
+python3 skills/device-log-viewer-profile/scripts/generate_profile.py /absolute/path/to/project --dry-run
+python3 skills/device-log-viewer-profile/scripts/generate_profile.py /absolute/path/to/project
+```
+
+它会读取 `ProjectSettings/ProjectSettings.asset` 中的：
+
+- `productName`
+- Android `applicationIdentifier`
+- iPhone `applicationIdentifier`
+
+同时会搜索 `[EventLog]:`。如果发现 GameFoundation 的 Firebase、Facebook、Adjust、AppsFlyer 格式，会自动选择 `gamefoundation-eventlog` 解析器。
+
+如果仓库中包含多个 Unity 工程，需要明确指定：
+
+```bash
+python3 skills/device-log-viewer-profile/scripts/generate_profile.py /absolute/path/to/repository \
+  --unity-root /absolute/path/to/repository/UnityProject \
+  --dry-run
+```
+
+默认输出到 `profiles/<profile-id>.json`。已存在的文件不会被覆盖；只有明确确认后才应使用 `--force`。
+
+查看全部参数：
+
+```bash
+python3 skills/device-log-viewer-profile/scripts/generate_profile.py --help
+```
+
+## 安装 Codex Skill
+
+仓库随附 `$device-log-viewer-profile` Skill。将它链接到个人 Codex Skills 目录：
+
+```bash
+mkdir -p "${HOME}/.codex/skills"
+ln -s /absolute/path/to/DeviceLogViewer/skills/device-log-viewer-profile \
+  "${HOME}/.codex/skills/device-log-viewer-profile"
+```
+
+之后可以在 Codex 中输入：
+
+```text
+使用 $device-log-viewer-profile 为当前 Unity 项目生成 DeviceLogViewer Profile
+```
+
+Skill 会先进行只读预览，核对识别结果后生成配置，并拒绝意外覆盖已有文件。
+
+## 命令行参数
+
+```text
+python3 server.py [--profile PROFILE] [--host HOST] [--port PORT]
+                  [--adb ADB_PATH] [--no-open]
+```
+
+- `--profile`：Profile JSON 路径。
+- `--host`：监听地址，默认 `127.0.0.1`。
+- `--port`：覆盖 Profile 中的默认端口。
+- `--adb`：明确指定 `adb` 可执行文件路径。
+- `--no-open`：启动后不自动打开浏览器。
+- `--version`：显示工具版本。
+- `--print-profile-id` / `--print-port`：验证配置并输出对应值。
+
+服务运行后：
+
+- `GET /api/config`：返回页面正在使用的公开 Profile 配置。
+- `GET /api/status`：返回工具版本、Profile id、依赖检测和采集状态。
+
+## 常见问题
+
+### 页面提示“未找到 adb”
+
+确认 Android Platform Tools 已安装，并执行：
+
+```bash
+adb version
+adb devices
+```
+
+也可以明确指定路径：
+
+```bash
+python3 server.py --adb /absolute/path/to/adb
+```
+
+### Android 设备显示 `unauthorized`
+
+解锁设备，在 USB 调试授权弹窗中点击“允许”，然后刷新设备列表。必要时重新连接 USB。
+
+### 找不到 iOS 模拟器
+
+先启动 Xcode Simulator，并确保至少有一个模拟器处于 Booted 状态。
+
+### 找不到 iPhone/iPad
+
+确认设备已解锁、信任当前 Mac、开启开发者模式，并先在 Xcode 的 **Devices and Simulators** 中确认可见。
+
+### 安装按钮不可用
+
+安装前必须停止日志采集，并选择有效设备及安装包或分发链接。
+
+### App 被杀后没有日志
+
+Android 指定 App 模式下无需停止采集。保持页面连接，重新启动 App 后工具会自动识别新 PID。
+
+### 端口被占用
+
+`start.command` 会从 Profile 的 `defaultPort` 开始尝试连续 11 个端口。也可以手动指定：
+
+```bash
+python3 server.py --profile profiles/default.json --port 8766
+```
+
+### “打开所在文件夹”没有反应
+
+先通过 `start.command` 启动一次，让 macOS 注册随附的小助手。浏览器首次调用时可能会询问是否允许打开。
+
+### macOS 阻止打开脚本
+
+可以在 Finder 中右键 `start.command`，选择“打开”；也可以直接在终端执行 `./start.command`。
+
+## 目录结构
+
+```text
+DeviceLogViewer/
+├── server.py
+├── index.html
+├── start.command
+├── OpenDeviceLogViewerFolder.app
+├── profiles/
+│   ├── default.json
+│   └── pawdoku.json
+├── schemas/
+│   └── device-log-viewer-profile.schema.json
+└── skills/
+    └── device-log-viewer-profile/
+        ├── SKILL.md
+        ├── agents/openai.yaml
+        ├── references/profile-format.md
+        └── scripts/generate_profile.py
+```
+
+核心服务只使用 Python 标准库，前端为单文件 HTML，不需要 npm、pip 或数据库。

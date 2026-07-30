@@ -1,0 +1,1646 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Device Log Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0c0f14;
+      --surface: #131820;
+      --surface-2: #191f29;
+      --border: #2a3340;
+      --text: #edf1f7;
+      --muted: #99a5b5;
+      --accent: #62d9a6;
+      --accent-strong: #42c58d;
+      --danger: #ff6b78;
+      --warning: #f4c45e;
+      --info: #69a7ff;
+      --violet: #bd94ff;
+      --control-height: 38px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button, input, select, .button-link { font: inherit; }
+
+    button, .button-link, select, input[type="search"], input[type="text"], input[type="url"] {
+      min-height: var(--control-height);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    button, .button-link {
+      padding: 0 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .button-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+    }
+
+    button:hover:not(:disabled), .button-link:hover { border-color: #4b596b; background: #202835; }
+    button:disabled { cursor: not-allowed; opacity: .48; }
+    button:focus-visible, .button-link:focus-visible, select:focus-visible, input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    button.primary {
+      border-color: var(--accent-strong);
+      background: var(--accent-strong);
+      color: #07150f;
+      font-weight: 700;
+    }
+
+    button.primary:hover:not(:disabled) { background: #58d9a0; border-color: #58d9a0; }
+    button.danger { color: #ff9aa3; }
+
+    .app {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
+      grid-template-areas: "topbar" "notice" "installer" "toolbar" "levels" "log" "status";
+      width: 100%;
+      min-width: 0;
+      height: 100dvh;
+    }
+
+    .topbar, .apk-installer, .ios-link-installer, .toolbar, .levels, .log-shell, .statusbar { min-width: 0; }
+    .topbar { grid-area: topbar; }
+    .notice { grid-area: notice; }
+    .apk-installer { grid-area: installer; }
+    .ios-link-installer { grid-area: installer; }
+    .toolbar { grid-area: toolbar; }
+    .levels { grid-area: levels; }
+    .log-shell { grid-area: log; }
+    .statusbar { grid-area: status; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      min-height: 58px;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: max-content;
+    }
+
+    .brand h1 { margin: 0; font-size: 16px; letter-spacing: .01em; }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; background: #657080; }
+    .status-dot.running { background: var(--accent); }
+    .status-dot.error { background: var(--danger); }
+
+    .device-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      margin-left: auto;
+    }
+
+    .device-controls select {
+      width: min(360px, 34vw);
+      padding: 0 34px 0 11px;
+    }
+
+    .device-controls .source-select { width: 155px; }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--border);
+      background: #10151c;
+    }
+
+    .search-wrap { position: relative; flex: 1 1 420px; min-width: 180px; }
+    .search-wrap input { width: 100%; padding: 0 34px 0 12px; }
+    .search-wrap kbd {
+      position: absolute;
+      right: 9px;
+      top: 9px;
+      color: var(--muted);
+      font: 11px/18px ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .check-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: var(--control-height);
+      color: var(--muted);
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    input[type="checkbox"] { accent-color: var(--accent-strong); }
+
+    .package-input {
+      flex: 1 1 250px;
+      min-width: 190px;
+      max-width: 330px;
+      padding: 0 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .package-input[hidden] { display: none; }
+    .package-input:disabled { opacity: .5; }
+
+    .levels {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      padding: 8px 18px;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      scrollbar-width: thin;
+    }
+
+    .level-toggle { position: relative; }
+    .level-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+    .level-toggle span {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 35px;
+      height: 29px;
+      padding: 0 9px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: #778292;
+      font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      cursor: pointer;
+    }
+
+    .level-toggle input:checked + span { border-color: #3a4655; background: #222a35; color: var(--text); }
+    .level-toggle input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .level-toggle[data-level="V"] input:checked + span { color: var(--violet); }
+    .level-toggle[data-level="D"] input:checked + span { color: #84b7ff; }
+    .level-toggle[data-level="I"] input:checked + span { color: var(--accent); }
+    .level-toggle[data-level="W"] input:checked + span { color: var(--warning); }
+    .level-toggle[data-level="E"] input:checked + span,
+    .level-toggle[data-level="F"] input:checked + span { color: var(--danger); }
+
+    .level-hint { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+    .notice {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+      padding: 9px 18px;
+      border-bottom: 1px solid #60434a;
+      background: #2a1b20;
+      color: #ffc4ca;
+    }
+    .notice.visible { display: flex; }
+    .notice-text { flex: 1 1 260px; min-width: 0; }
+    .notice-actions { display: flex; gap: 8px; margin-left: auto; }
+    .notice-actions button[hidden] { display: none; }
+
+    .apk-installer {
+      display: grid;
+      gap: 8px;
+      padding: 9px 18px;
+      border-bottom: 1px solid var(--border);
+      background: #10151c;
+    }
+
+    .apk-installer[hidden] { display: none; }
+    .apk-install-row, .apk-link-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+
+    .apk-drop-zone {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex: 1 1 520px;
+      min-width: 0;
+      min-height: 42px;
+      padding: 8px 12px;
+      border: 1px dashed #465365;
+      border-radius: 7px;
+      background: #151b24;
+      cursor: pointer;
+    }
+
+    .apk-drop-zone:hover,
+    .apk-drop-zone:focus-visible,
+    .apk-drop-zone.dragging {
+      border-color: var(--accent-strong);
+      background: #14231e;
+      outline: none;
+    }
+
+    .apk-drop-zone.has-file { border-style: solid; }
+    .apk-drop-title { overflow: hidden; color: var(--text); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .apk-drop-hint { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .apk-install-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .apk-status { max-width: 320px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .apk-status.success { color: var(--accent); }
+    .apk-status.error { color: var(--danger); }
+
+    .ios-link-installer {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 9px 18px;
+      border-bottom: 1px solid var(--border);
+      background: #10151c;
+    }
+
+    .ios-link-installer[hidden] { display: none; }
+    .ios-link-main, .apk-link-main { display: flex; align-items: baseline; gap: 10px; flex: 1 1 620px; min-width: 0; }
+    .ios-link-input, .apk-link-input {
+      flex: 1 1 440px;
+      min-width: 240px;
+      padding: 0 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .ios-link-hint, .apk-link-hint { min-width: 0; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .ios-install-actions, .apk-link-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .ios-install-status, .apk-link-status { max-width: 360px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .ios-install-status.success, .apk-link-status.success { color: var(--accent); }
+    .ios-install-status.error, .apk-link-status.error { color: var(--danger); }
+
+    .log-shell { min-height: 0; position: relative; background: #090c10; }
+
+    .log-view {
+      height: 100%;
+      overflow: auto;
+      padding: 10px 0 18px;
+      overscroll-behavior: contain;
+      scrollbar-color: #394454 #0d1117;
+    }
+
+    .empty-state {
+      display: grid;
+      place-content: center;
+      gap: 5px;
+      height: 100%;
+      padding: 24px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .empty-state[hidden] { display: none; }
+    .empty-state strong { color: #d9e0e9; font-size: 15px; }
+
+    .log-line {
+      display: grid;
+      grid-template-columns: 58px minmax(0, 1fr);
+      min-height: 22px;
+      padding: 1px 18px 1px 0;
+      color: #c7d0dc;
+      font: 12.5px/20px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .log-line:hover { background: #131922; }
+    .line-no { padding-right: 12px; color: #4d5867; text-align: right; user-select: none; }
+    .line-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .log-line.level-V .line-text { color: var(--violet); }
+    .log-line.level-D .line-text { color: #8ebcf8; }
+    .log-line.level-I .line-text { color: #b8e6d2; }
+    .log-line.level-W .line-text { color: #f4cc76; }
+    .log-line.level-E .line-text, .log-line.level-F .line-text { color: #ff8994; }
+    mark { border-radius: 2px; background: #765f18; color: #fff4bd; }
+
+    .analytics-card {
+      align-items: start;
+      padding-top: 6px;
+      padding-bottom: 7px;
+    }
+    .analytics-card:hover { background: transparent; }
+    .analytics-card > .line-no { padding-top: 10px; }
+    .analytics-panel {
+      min-width: 0;
+      padding: 10px 12px 11px;
+      border: 1px solid #283646;
+      border-radius: 8px;
+      background: #111923;
+    }
+    .analytics-card:hover .analytics-panel { border-color: #3a4b5f; background: #131e29; }
+    .analytics-header {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 7px;
+      min-width: 0;
+    }
+    .analytics-name {
+      min-width: 0;
+      color: var(--info);
+      font: 700 14px/20px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      overflow-wrap: anywhere;
+    }
+    .analytics-platform {
+      padding: 2px 6px;
+      border: 1px solid #285744;
+      border-radius: 5px;
+      background: #13271f;
+      color: var(--accent);
+      font: 700 10px/14px ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-transform: uppercase;
+    }
+    .analytics-time {
+      margin-left: auto;
+      color: var(--muted);
+      font: 11px/18px ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: nowrap;
+    }
+    .analytics-params { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+    .analytics-param {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 6px;
+      max-width: 100%;
+      padding: 4px 8px;
+      border: 1px solid #294052;
+      border-radius: 6px;
+      background: #172633;
+      color: #d8e1ec;
+      font: 12px/18px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .analytics-key { color: #83b9ff; font-weight: 700; }
+    .analytics-value { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .analytics-no-params { margin-top: 7px; color: var(--muted); font-size: 11px; }
+
+    .paused-badge {
+      position: absolute;
+      top: 14px;
+      right: 18px;
+      padding: 5px 9px;
+      border: 1px solid #715d28;
+      border-radius: 5px;
+      background: #2e2818;
+      color: var(--warning);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .statusbar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-height: 35px;
+      padding: 6px 18px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .statusbar .capture-status { color: #cdd5df; }
+    .statusbar .spacer { flex: 1; }
+    .stream-state { white-space: nowrap; }
+    .stream-state.connected { color: var(--accent); }
+    .stream-state.disconnected { color: var(--danger); }
+
+    @media (max-width: 780px) {
+      .app { grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto; }
+      .topbar { align-items: stretch; flex-direction: column; gap: 9px; padding: 10px 12px; }
+      .device-controls { width: 100%; margin: 0; flex-wrap: wrap; }
+      .device-controls select { flex: 1; width: auto; min-width: 0; }
+      .device-controls .source-select { flex: 0 0 145px; }
+      .apk-installer { padding: 9px 12px; }
+      .apk-install-row, .apk-link-row { align-items: stretch; flex-direction: column; }
+      .apk-drop-zone { align-items: flex-start; flex-basis: auto; flex-direction: column; gap: 2px; }
+      .apk-install-actions { justify-content: flex-end; }
+      .apk-status { flex: 1; max-width: none; }
+      .ios-link-installer { align-items: stretch; flex-direction: column; padding: 9px 12px; }
+      .ios-link-main, .apk-link-main { align-items: stretch; flex-basis: auto; flex-direction: column; gap: 4px; }
+      .ios-link-input, .apk-link-input { flex-basis: auto; width: 100%; min-width: 0; }
+      .ios-link-hint, .apk-link-hint { white-space: normal; }
+      .ios-install-actions, .apk-link-actions { justify-content: flex-end; }
+      .ios-install-status, .apk-link-status { flex: 1; max-width: none; }
+      .toolbar { flex-wrap: wrap; padding: 9px 12px; }
+      .search-wrap { flex-basis: 100%; }
+      .levels { padding: 7px 12px; }
+      .level-hint { display: none; }
+      .log-line { grid-template-columns: 45px minmax(0, 1fr); padding-right: 10px; font-size: 11.5px; }
+      .line-no { padding-right: 8px; }
+      .analytics-panel { padding: 8px 9px 9px; }
+      .analytics-card > .line-no { padding-top: 8px; }
+      .analytics-time { width: 100%; margin-left: 0; }
+      .statusbar { padding: 6px 12px; gap: 8px; }
+      .status-message { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span id="statusDot" class="status-dot" aria-hidden="true"></span>
+        <h1 id="brandTitle">Device Log Viewer</h1>
+      </div>
+      <div class="device-controls" aria-label="设备与采集控制">
+        <select id="sourceSelect" class="source-select" aria-label="日志来源">
+          <option value="android">Android</option>
+          <option value="ios-simulator">iOS 模拟器</option>
+          <option value="ios-device">iPhone / iPad</option>
+        </select>
+        <select id="deviceSelect" aria-label="日志设备">
+          <option value="">正在查找设备…</option>
+        </select>
+        <button id="refreshButton" type="button" title="刷新设备列表">刷新</button>
+        <button id="startButton" class="primary" type="button" disabled>开始</button>
+        <button id="stopButton" type="button" disabled>停止</button>
+      </div>
+    </header>
+
+    <section id="notice" class="notice" role="alert">
+      <span id="noticeText" class="notice-text"></span>
+      <div class="notice-actions">
+        <button id="reconnectAdbButton" type="button" hidden>重新检测工具</button>
+        <button id="dismissNotice" type="button">关闭</button>
+      </div>
+    </section>
+
+    <section id="apkInstaller" class="apk-installer" aria-label="安装 Android APK">
+      <input id="apkFileInput" type="file" accept=".apk,application/vnd.android.package-archive" hidden>
+      <div class="apk-install-row">
+        <div id="apkDropZone" class="apk-drop-zone" role="button" tabindex="0" aria-controls="apkFileInput">
+          <span id="apkDropTitle" class="apk-drop-title">拖入 APK，或点击选择文件</span>
+          <span id="apkDropHint" class="apk-drop-hint">将安装到上方选中的 Android 设备</span>
+        </div>
+        <div class="apk-install-actions">
+          <span id="apkStatus" class="apk-status" aria-live="polite"></span>
+          <button id="clearApkButton" type="button" hidden>移除</button>
+          <button id="installApkButton" class="primary" type="button" disabled>安装 APK</button>
+        </div>
+      </div>
+      <div class="apk-link-row">
+        <div class="apk-link-main">
+          <input id="androidInstallUrl" class="apk-link-input" type="url" placeholder="粘贴 FIR Android 分发链接或直接 APK 地址" aria-label="Android 分发链接" spellcheck="false" autocomplete="off">
+          <span id="androidLinkHint" class="apk-link-hint">解析链接后下载 APK，并安装到上方选中的 Android 设备</span>
+        </div>
+        <div class="apk-link-actions">
+          <span id="androidInstallStatus" class="apk-link-status" aria-live="polite"></span>
+          <button id="installAndroidLinkButton" class="primary" type="button" disabled>下载并安装</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="iosLinkInstaller" class="ios-link-installer" aria-label="通过分发链接安装 iOS App" hidden>
+      <div class="ios-link-main">
+        <input id="iosInstallUrl" class="ios-link-input" type="url" placeholder="粘贴 FIR iOS 分发链接" aria-label="iOS 分发链接" spellcheck="false" autocomplete="off">
+        <span id="iosLinkHint" class="ios-link-hint">解析链接后下载 IPA，并安装到上方选中的 iPhone / iPad</span>
+      </div>
+      <div class="ios-install-actions">
+        <span id="iosInstallStatus" class="ios-install-status" aria-live="polite"></span>
+        <button id="installIosButton" class="primary" type="button" disabled>下载并安装</button>
+      </div>
+    </section>
+
+    <section class="toolbar" aria-label="日志操作">
+      <label id="appOnlyControl" class="check-control" title="只采集指定 App 的日志">
+        <input id="appOnly" type="checkbox" checked> <span id="appOnlyText">仅指定 App</span>
+      </label>
+      <select id="packageSelect" class="package-input" aria-label="选择指定 App">
+        <option value="">选择已安装的 App</option>
+        <option value="__manual__">手动输入包名…</option>
+      </select>
+      <input id="packageInput" class="package-input" type="text" value="" placeholder="手动输入包名或 Bundle ID" aria-label="手动输入 App 标识" spellcheck="false" autocomplete="off" hidden>
+      <button id="refreshAppsButton" type="button" disabled title="重新读取所选设备安装的第三方 App">刷新 App</button>
+      <div class="search-wrap">
+        <input id="searchInput" type="search" placeholder="筛选关键词、Tag、进程…" autocomplete="off" aria-label="筛选日志">
+        <kbd>⌘F</kbd>
+      </div>
+      <label id="analyticsControl" class="check-control" title="只显示 Profile 配置的埋点日志" hidden>
+        <input id="analyticsOnly" type="checkbox"> <span id="analyticsOnlyText">只看埋点</span>
+      </label>
+      <label class="check-control"><input id="autoScroll" type="checkbox" checked> 自动滚动</label>
+      <button id="pauseButton" type="button">暂停显示</button>
+      <button id="clearViewButton" type="button">清空页面</button>
+      <button id="clearDeviceButton" class="danger" type="button" disabled>清设备日志</button>
+      <button id="downloadButton" type="button" disabled title="下载当前筛选结果">下载 TXT</button>
+      <a class="button-link" href="device-log-viewer://open-folder" title="无需日志服务，直接在 Finder 中打开工具所在文件夹">打开所在文件夹</a>
+    </section>
+
+    <nav class="levels" aria-label="日志级别筛选">
+      <label class="level-toggle" data-level="V"><input type="checkbox" value="V" checked><span>V</span></label>
+      <label class="level-toggle" data-level="D"><input type="checkbox" value="D" checked><span>D</span></label>
+      <label class="level-toggle" data-level="I"><input type="checkbox" value="I" checked><span>I</span></label>
+      <label class="level-toggle" data-level="W"><input type="checkbox" value="W" checked><span>W</span></label>
+      <label class="level-toggle" data-level="E"><input type="checkbox" value="E" checked><span>E</span></label>
+      <label class="level-toggle" data-level="F"><input type="checkbox" value="F" checked><span>F</span></label>
+      <label class="level-toggle" data-level="?"><input type="checkbox" value="?" checked><span>其他</span></label>
+      <span class="level-hint">最多保留最近 20,000 行</span>
+    </nav>
+
+    <section class="log-shell" aria-label="实时日志">
+      <div id="logView" class="log-view" tabindex="0" aria-live="off">
+        <div id="emptyState" class="empty-state">
+          <strong>选择日志来源和设备，然后点“开始”</strong>
+          <span>日志会实时显示在这里，可随时筛选或下载。</span>
+        </div>
+        <div id="logLines"></div>
+      </div>
+      <div id="pausedBadge" class="paused-badge" hidden>显示已暂停，日志仍在后台接收</div>
+    </section>
+
+    <footer class="statusbar">
+      <span id="captureStatus" class="capture-status">尚未开始</span>
+      <span id="statusMessage" class="status-message"></span>
+      <span class="spacer"></span>
+      <span id="lineCount">0 行</span>
+      <span id="streamState" class="stream-state disconnected">服务连接中…</span>
+    </footer>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const MAX_LINES = 20000;
+      const MANUAL_APP_VALUE = "__manual__";
+      const FALLBACK_CONFIG = {
+        schemaVersion: 1,
+        id: "default",
+        displayName: "Device Log Viewer",
+        defaultPort: 8765,
+        apps: {
+          android: { default: "", presets: [] },
+          ios: { default: "", presets: [] }
+        },
+        analytics: { enabled: false, marker: "", parser: "plain", platforms: [] }
+      };
+      let runtimeConfig = FALLBACK_CONFIG;
+      let analyticsLogMarker = "";
+      const elements = {
+        brandTitle: document.querySelector("#brandTitle"),
+        statusDot: document.querySelector("#statusDot"),
+        sourceSelect: document.querySelector("#sourceSelect"),
+        deviceSelect: document.querySelector("#deviceSelect"),
+        refreshButton: document.querySelector("#refreshButton"),
+        startButton: document.querySelector("#startButton"),
+        stopButton: document.querySelector("#stopButton"),
+        apkInstaller: document.querySelector("#apkInstaller"),
+        apkFileInput: document.querySelector("#apkFileInput"),
+        apkDropZone: document.querySelector("#apkDropZone"),
+        apkDropTitle: document.querySelector("#apkDropTitle"),
+        apkDropHint: document.querySelector("#apkDropHint"),
+        apkStatus: document.querySelector("#apkStatus"),
+        clearApkButton: document.querySelector("#clearApkButton"),
+        installApkButton: document.querySelector("#installApkButton"),
+        androidInstallUrl: document.querySelector("#androidInstallUrl"),
+        androidLinkHint: document.querySelector("#androidLinkHint"),
+        androidInstallStatus: document.querySelector("#androidInstallStatus"),
+        installAndroidLinkButton: document.querySelector("#installAndroidLinkButton"),
+        iosLinkInstaller: document.querySelector("#iosLinkInstaller"),
+        iosInstallUrl: document.querySelector("#iosInstallUrl"),
+        iosLinkHint: document.querySelector("#iosLinkHint"),
+        iosInstallStatus: document.querySelector("#iosInstallStatus"),
+        installIosButton: document.querySelector("#installIosButton"),
+        appOnlyControl: document.querySelector("#appOnlyControl"),
+        appOnly: document.querySelector("#appOnly"),
+        appOnlyText: document.querySelector("#appOnlyText"),
+        packageSelect: document.querySelector("#packageSelect"),
+        packageInput: document.querySelector("#packageInput"),
+        refreshAppsButton: document.querySelector("#refreshAppsButton"),
+        searchInput: document.querySelector("#searchInput"),
+        analyticsControl: document.querySelector("#analyticsControl"),
+        analyticsOnly: document.querySelector("#analyticsOnly"),
+        analyticsOnlyText: document.querySelector("#analyticsOnlyText"),
+        autoScroll: document.querySelector("#autoScroll"),
+        pauseButton: document.querySelector("#pauseButton"),
+        clearViewButton: document.querySelector("#clearViewButton"),
+        clearDeviceButton: document.querySelector("#clearDeviceButton"),
+        downloadButton: document.querySelector("#downloadButton"),
+        logView: document.querySelector("#logView"),
+        logLines: document.querySelector("#logLines"),
+        emptyState: document.querySelector("#emptyState"),
+        pausedBadge: document.querySelector("#pausedBadge"),
+        captureStatus: document.querySelector("#captureStatus"),
+        statusMessage: document.querySelector("#statusMessage"),
+        lineCount: document.querySelector("#lineCount"),
+        streamState: document.querySelector("#streamState"),
+        notice: document.querySelector("#notice"),
+        noticeText: document.querySelector("#noticeText"),
+        reconnectAdbButton: document.querySelector("#reconnectAdbButton"),
+        dismissNotice: document.querySelector("#dismissNotice"),
+        levelInputs: [...document.querySelectorAll(".level-toggle input")]
+      };
+
+      let logs = [];
+      let nextLineNumber = 1;
+      let lastParsedLevel = "?";
+      let captureState = "idle";
+      let captureSource = "android";
+      let captureSerial = "";
+      let paused = false;
+      let renderScheduled = false;
+      let filterTimer = 0;
+      let renderedThrough = 0;
+      let renderedFilterSignature = "";
+      let forceFullRender = true;
+      let appRequestId = 0;
+      let selectedApkFile = null;
+      let apkInstalling = false;
+      let apkLinkInstalling = false;
+      let iosInstalling = false;
+
+      const api = async (path, options = {}) => {
+        const response = await fetch(path, {
+          headers: { "Content-Type": "application/json" },
+          ...options
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.ok === false) {
+          throw new Error(payload.error || `请求失败（${response.status}）`);
+        }
+        return payload;
+      };
+
+      const showNotice = (message, canReconnectAdb = false) => {
+        elements.noticeText.textContent = message;
+        elements.reconnectAdbButton.hidden = !canReconnectAdb;
+        elements.notice.classList.add("visible");
+      };
+
+      const hideNotice = () => {
+        elements.notice.classList.remove("visible");
+        elements.reconnectAdbButton.hidden = true;
+      };
+
+      const formatDeviceLabel = (device) => {
+        const parts = [device.name || device.model || device.serial];
+        if (device.detail) parts.push(device.detail);
+        parts.push(device.statusLabel || device.state);
+        return parts.join(" · ");
+      };
+
+      const sourceName = (source = elements.sourceSelect.value) => ({
+        android: "Android",
+        "ios-simulator": "iOS 模拟器",
+        "ios-device": "iPhone / iPad"
+      })[source] || source;
+
+      const appProfile = (source = elements.sourceSelect.value) => {
+        return source === "android" ? runtimeConfig.apps.android : runtimeConfig.apps.ios;
+      };
+
+      const defaultAppId = (source = elements.sourceSelect.value) => appProfile(source)?.default || "";
+
+      const configuredApps = (source = elements.sourceSelect.value) => appProfile(source)?.presets || [];
+
+      const appOptionLabel = (app, source = elements.sourceSelect.value) => {
+        const label = app.label || app.id;
+        return app.id === defaultAppId(source) ? `${label}（默认）` : label;
+      };
+
+      const selectedAppId = () => {
+        return elements.packageSelect.value === MANUAL_APP_VALUE
+          ? elements.packageInput.value.trim()
+          : elements.packageSelect.value.trim();
+      };
+
+      const formatFileSize = (bytes) => {
+        if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(bytes < 100 * 1024 * 1024 ? 1 : 0)} MB`;
+      };
+
+      const validateHttpInstallLink = (link, platformName) => {
+        let parsedLink;
+        try {
+          parsedLink = new URL(link);
+        } catch {
+          showNotice(`请输入完整的 ${platformName} 分发链接。`);
+          return null;
+        }
+        if (!["http:", "https:"].includes(parsedLink.protocol)) {
+          showNotice(`${platformName} 分发链接必须以 http:// 或 https:// 开头。`);
+          return null;
+        }
+        return parsedLink;
+      };
+
+      const setApkStatus = (message = "", type = "") => {
+        elements.apkStatus.textContent = message;
+        elements.apkStatus.className = `apk-status${type ? ` ${type}` : ""}`;
+        elements.apkStatus.title = message;
+      };
+
+      const renderApkSelection = () => {
+        const isAndroid = elements.sourceSelect.value === "android";
+        const deviceLabel = elements.deviceSelect.selectedOptions[0]?.textContent || "尚未选择设备";
+        elements.apkInstaller.hidden = !isAndroid;
+        elements.apkDropZone.classList.toggle("has-file", Boolean(selectedApkFile));
+        elements.apkDropTitle.textContent = selectedApkFile ? selectedApkFile.name : "拖入 APK，或点击选择文件";
+        elements.apkDropHint.textContent = selectedApkFile
+          ? `${formatFileSize(selectedApkFile.size)} · 目标：${deviceLabel}`
+          : `将安装到：${deviceLabel}`;
+        elements.clearApkButton.hidden = !selectedApkFile;
+        elements.installApkButton.textContent = apkInstalling ? "正在安装…" : "安装 APK";
+      };
+
+      const setApkFile = (file) => {
+        if (!file) return;
+        if (!file.name.toLocaleLowerCase().endsWith(".apk")) {
+          showNotice("请选择扩展名为 .apk 的 Android 安装包。");
+          return;
+        }
+        if (!file.size) {
+          showNotice("APK 文件为空，请重新选择。");
+          return;
+        }
+        if (file.size > 1024 * 1024 * 1024) {
+          showNotice("APK 文件超过 1 GB，无法上传。");
+          return;
+        }
+        selectedApkFile = file;
+        setApkStatus();
+        renderApkSelection();
+        updateButtons();
+      };
+
+      const clearApkFile = () => {
+        selectedApkFile = null;
+        elements.apkFileInput.value = "";
+        setApkStatus();
+        renderApkSelection();
+        updateButtons();
+      };
+
+      const installApk = async () => {
+        const serial = elements.deviceSelect.value;
+        if (!selectedApkFile || !serial || elements.sourceSelect.value !== "android") return;
+        if (captureState === "running") {
+          showNotice("请先停止日志采集，再安装 APK。安装过程可能会重启 App。");
+          return;
+        }
+
+        apkInstalling = true;
+        setApkStatus(`正在上传并安装 ${selectedApkFile.name}…`);
+        renderApkSelection();
+        updateButtons();
+        try {
+          const result = await api(`/api/install-apk?serial=${encodeURIComponent(serial)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/vnd.android.package-archive" },
+            body: selectedApkFile
+          });
+          const deviceLabel = elements.deviceSelect.selectedOptions[0]?.textContent || serial;
+          setApkStatus(`${result.message || "APK 安装成功"} · ${deviceLabel}`, "success");
+          elements.statusMessage.textContent = `${selectedApkFile.name} 安装成功`;
+          await refreshApps({ showErrors: false });
+        } catch (error) {
+          setApkStatus(error.message, "error");
+          showNotice(error.message);
+        } finally {
+          apkInstalling = false;
+          renderApkSelection();
+          updateButtons();
+        }
+      };
+
+      const setAndroidInstallStatus = (message = "", type = "") => {
+        elements.androidInstallStatus.textContent = message;
+        elements.androidInstallStatus.className = `apk-link-status${type ? ` ${type}` : ""}`;
+        elements.androidInstallStatus.title = message;
+      };
+
+      const renderAndroidLinkInstaller = () => {
+        const deviceLabel = elements.deviceSelect.selectedOptions[0]?.textContent || "尚未选择设备";
+        elements.androidLinkHint.textContent = `解析并临时下载 APK · 目标：${deviceLabel}`;
+        elements.installAndroidLinkButton.textContent = apkLinkInstalling ? "正在下载并安装…" : "下载并安装";
+      };
+
+      const installApkFromLink = async () => {
+        const serial = elements.deviceSelect.value;
+        const link = elements.androidInstallUrl.value.trim();
+        if (!serial || !link || elements.sourceSelect.value !== "android") return;
+        if (captureState === "running") {
+          showNotice("请先停止日志采集，再通过链接安装 APK。");
+          return;
+        }
+        if (!validateHttpInstallLink(link, "Android")) return;
+
+        const deviceLabel = elements.deviceSelect.selectedOptions[0]?.textContent || serial;
+        const confirmed = window.confirm(
+          `将从这个链接下载 APK，并安装到：\n${deviceLabel}\n\n同包名的现有 App 会被覆盖安装。是否继续？`
+        );
+        if (!confirmed) return;
+
+        apkLinkInstalling = true;
+        hideNotice();
+        setAndroidInstallStatus("正在解析链接并下载 APK，较大的安装包可能需要几分钟…");
+        renderAndroidLinkInstaller();
+        updateButtons();
+        try {
+          const result = await api("/api/install-apk-link", {
+            method: "POST",
+            body: JSON.stringify({ serial, url: link })
+          });
+          const app = result.app || {};
+          const versionParts = [app.version, app.build ? `Build ${app.build}` : ""].filter(Boolean);
+          const appLabel = [app.name || "Android App", versionParts.join(" · ")].filter(Boolean).join(" ");
+          const sizeLabel = result.fileSize ? ` · ${formatFileSize(result.fileSize)}` : "";
+          setAndroidInstallStatus(`${result.message || "APK 安装成功"} · ${appLabel}${sizeLabel}`, "success");
+          elements.statusMessage.textContent = `${appLabel} 已安装到 ${deviceLabel}`;
+          await refreshApps({ showErrors: false });
+        } catch (error) {
+          setAndroidInstallStatus(error.message, "error");
+          showNotice(error.message);
+        } finally {
+          apkLinkInstalling = false;
+          renderAndroidLinkInstaller();
+          updateButtons();
+        }
+      };
+
+      const setIosInstallStatus = (message = "", type = "") => {
+        elements.iosInstallStatus.textContent = message;
+        elements.iosInstallStatus.className = `ios-install-status${type ? ` ${type}` : ""}`;
+        elements.iosInstallStatus.title = message;
+      };
+
+      const renderIosInstaller = () => {
+        const isIosDevice = elements.sourceSelect.value === "ios-device";
+        const deviceLabel = elements.deviceSelect.selectedOptions[0]?.textContent || "尚未选择设备";
+        elements.iosLinkInstaller.hidden = !isIosDevice;
+        elements.iosLinkHint.textContent = `解析并临时下载 IPA · 目标：${deviceLabel}`;
+        elements.installIosButton.textContent = iosInstalling ? "正在下载并安装…" : "下载并安装";
+      };
+
+      const installIosFromLink = async () => {
+        const serial = elements.deviceSelect.value;
+        const link = elements.iosInstallUrl.value.trim();
+        if (!serial || !link || elements.sourceSelect.value !== "ios-device") return;
+        if (captureState === "running") {
+          showNotice("请先停止日志采集，再安装 iOS App。");
+          return;
+        }
+        if (!validateHttpInstallLink(link, "iOS")) return;
+
+        const deviceLabel = elements.deviceSelect.selectedOptions[0]?.textContent || serial;
+        const confirmed = window.confirm(
+          `将从这个链接下载 iOS App，并安装到：\n${deviceLabel}\n\n同 Bundle ID 的现有 App 可能会被覆盖。是否继续？`
+        );
+        if (!confirmed) return;
+
+        iosInstalling = true;
+        hideNotice();
+        setIosInstallStatus("正在解析链接并下载 IPA，较大的安装包可能需要几分钟…");
+        renderIosInstaller();
+        updateButtons();
+        try {
+          const result = await api("/api/install-ios-link", {
+            method: "POST",
+            body: JSON.stringify({ serial, url: link })
+          });
+          const app = result.app || {};
+          const versionParts = [app.version, app.build ? `Build ${app.build}` : ""].filter(Boolean);
+          const appLabel = [app.name || app.bundleId || "iOS App", versionParts.join(" · ")].filter(Boolean).join(" ");
+          const sizeLabel = result.fileSize ? ` · ${formatFileSize(result.fileSize)}` : "";
+          setIosInstallStatus(`${result.message || "iOS App 安装成功"} · ${appLabel}${sizeLabel}`, "success");
+          elements.statusMessage.textContent = `${appLabel} 已安装到 ${deviceLabel}`;
+          await refreshApps({ showErrors: false });
+        } catch (error) {
+          setIosInstallStatus(error.message, "error");
+          showNotice(error.message);
+        } finally {
+          iosInstalling = false;
+          renderIosInstaller();
+          updateButtons();
+        }
+      };
+
+      const resetAppOptions = (selectedApp = defaultAppId()) => {
+        const source = elements.sourceSelect.value;
+        const options = [new Option("选择已安装的 App", "")];
+        for (const app of configuredApps(source)) {
+          options.push(new Option(appOptionLabel(app, source), app.id));
+        }
+        options.push(new Option(source === "android" ? "手动输入包名…" : "手动输入 Bundle ID…", MANUAL_APP_VALUE));
+        elements.packageSelect.replaceChildren(...options);
+
+        if (configuredApps(source).some(app => app.id === selectedApp)) {
+          elements.packageSelect.value = selectedApp;
+        } else if (selectedApp) {
+          elements.packageSelect.value = MANUAL_APP_VALUE;
+          elements.packageInput.value = selectedApp;
+        } else {
+          elements.packageSelect.value = "";
+        }
+      };
+
+      const refreshApps = async ({ showErrors = true } = {}) => {
+        const source = elements.sourceSelect.value;
+        const serial = elements.deviceSelect.value;
+        const requestId = ++appRequestId;
+        const wasManual = elements.packageSelect.value === MANUAL_APP_VALUE;
+        const previousApp = selectedAppId() || defaultAppId();
+        if (!serial) {
+          resetAppOptions(previousApp);
+          updateButtons();
+          return;
+        }
+
+        elements.refreshAppsButton.disabled = true;
+        elements.packageSelect.disabled = true;
+        try {
+          const { apps } = await api(`/api/apps?source=${encodeURIComponent(source)}&serial=${encodeURIComponent(serial)}`);
+          if (requestId !== appRequestId) return;
+
+          const appsById = new Map(configuredApps(source).map(app => [app.id, app]));
+          for (const app of apps.filter(app => app?.id)) {
+            if (!appsById.has(app.id)) appsById.set(app.id, app);
+          }
+          const availableApps = [...appsById.values()];
+          elements.packageSelect.replaceChildren(new Option("选择已安装的 App", ""));
+          for (const app of availableApps) {
+            elements.packageSelect.add(new Option(appOptionLabel(app, source), app.id));
+          }
+          elements.packageSelect.add(new Option(source === "android" ? "手动输入包名…" : "手动输入 Bundle ID…", MANUAL_APP_VALUE));
+
+          if (appsById.has(previousApp)) {
+            elements.packageSelect.value = previousApp;
+          } else if (wasManual && previousApp) {
+            elements.packageSelect.value = MANUAL_APP_VALUE;
+            elements.packageInput.value = previousApp;
+          } else if (defaultAppId(source)) {
+            elements.packageSelect.value = defaultAppId(source);
+          } else if (availableApps.length === 1) {
+            elements.packageSelect.value = availableApps[0].id;
+          } else {
+            elements.packageSelect.value = "";
+          }
+        } catch (error) {
+          if (requestId !== appRequestId) return;
+          resetAppOptions(previousApp);
+          if (showErrors) showNotice(error.message);
+        } finally {
+          if (requestId === appRequestId) updateButtons();
+        }
+      };
+
+      const refreshDevices = async () => {
+        const source = elements.sourceSelect.value;
+        elements.refreshButton.disabled = true;
+        const previous = elements.deviceSelect.value || (captureSource === source ? captureSerial : "");
+        try {
+          const { devices } = await api(`/api/devices?source=${encodeURIComponent(source)}`);
+          elements.deviceSelect.replaceChildren();
+          if (!devices.length) {
+            const emptyText = source === "android"
+              ? "未发现 Android 设备"
+              : source === "ios-simulator"
+                ? "未发现已安装的 iOS 模拟器"
+                : "未发现已连接的 iPhone / iPad";
+            elements.deviceSelect.add(new Option(emptyText, ""));
+          } else {
+            elements.deviceSelect.add(new Option(`选择${sourceName(source)}设备`, ""));
+            for (const device of devices) {
+              const option = new Option(formatDeviceLabel(device), device.serial);
+              option.disabled = !device.available;
+              elements.deviceSelect.add(option);
+            }
+            const availableSerials = devices.filter(device => device.available).map(device => device.serial);
+            if (availableSerials.includes(previous)) {
+              elements.deviceSelect.value = previous;
+            } else if (availableSerials.length === 1) {
+              elements.deviceSelect.value = availableSerials[0];
+            }
+          }
+          updateButtons();
+          await refreshApps({ showErrors: false });
+        } catch (error) {
+          elements.deviceSelect.replaceChildren(new Option(`${sourceName(source)}不可用`, ""));
+          showNotice(error.message, true);
+          updateButtons();
+        } finally {
+          elements.refreshButton.disabled = false;
+          renderApkSelection();
+          renderAndroidLinkInstaller();
+          renderIosInstaller();
+          updateButtons();
+        }
+      };
+
+      const reconnectTools = async () => {
+        const source = elements.sourceSelect.value;
+        const originalText = elements.reconnectAdbButton.textContent;
+        elements.reconnectAdbButton.disabled = true;
+        elements.reconnectAdbButton.textContent = "正在检测…";
+        try {
+          const { status } = await api("/api/reconnect-tools", {
+            method: "POST",
+            body: JSON.stringify({ source })
+          });
+          updateCaptureStatus(status);
+          await refreshDevices();
+          hideNotice();
+          elements.statusMessage.textContent = `${sourceName(source)}工具已重新检测`;
+        } catch (error) {
+          showNotice(error.message, true);
+        } finally {
+          elements.reconnectAdbButton.disabled = false;
+          elements.reconnectAdbButton.textContent = originalText;
+        }
+      };
+
+      const updateSourceUi = () => {
+        const source = elements.sourceSelect.value;
+        const isIosDevice = source === "ios-device";
+        if (isIosDevice) elements.appOnly.checked = true;
+        elements.appOnlyText.textContent = isIosDevice ? "仅指定 App（真机必选）" : "仅指定 App";
+        elements.appOnlyControl.title = isIosDevice
+          ? "iPhone/iPad 真机通过 Xcode 连接指定 App 控制台"
+          : "只采集指定 App 的日志";
+        elements.packageInput.placeholder = source === "android" ? "手动输入 App 包名" : "手动输入 Bundle ID";
+        elements.packageInput.setAttribute("aria-label", elements.packageInput.placeholder);
+        elements.clearDeviceButton.textContent = "清设备日志";
+        elements.clearDeviceButton.title = source === "android" ? "清空 Android Logcat 缓冲区" : "iOS 不支持从本工具清空系统日志";
+        elements.deviceSelect.setAttribute("aria-label", `${sourceName(source)}设备`);
+        renderApkSelection();
+        renderAndroidLinkInstaller();
+        renderIosInstaller();
+      };
+
+      const updateCaptureStatus = (status) => {
+        captureState = status.state || "idle";
+        captureSource = status.source || captureSource;
+        captureSerial = status.serial || "";
+        if (captureState === "running" && elements.sourceSelect.value !== captureSource) {
+          elements.sourceSelect.value = captureSource;
+          updateSourceUi();
+        }
+        elements.statusDot.className = `status-dot ${captureState === "running" ? "running" : captureState === "error" ? "error" : ""}`;
+        elements.captureStatus.textContent = captureState === "running" ? "正在采集" : captureState === "error" ? "采集异常" : "已停止";
+        elements.statusMessage.textContent = status.message || "";
+        if (captureState === "error" && status.message) showNotice(status.message);
+        updateButtons();
+        scheduleRender();
+      };
+
+      const updateButtons = () => {
+        const source = elements.sourceSelect.value;
+        const hasDevice = Boolean(elements.deviceSelect.value);
+        const running = captureState === "running";
+        const busy = running || apkInstalling || apkLinkInstalling || iosInstalling;
+        const requiresApp = source === "ios-device";
+        if (requiresApp) elements.appOnly.checked = true;
+        const needsApp = elements.appOnly.checked || requiresApp;
+        const manualApp = elements.packageSelect.value === MANUAL_APP_VALUE;
+        const hasApp = Boolean(selectedAppId());
+        elements.startButton.disabled = !hasDevice || busy || (needsApp && !hasApp);
+        elements.stopButton.disabled = !running;
+        elements.sourceSelect.disabled = busy;
+        elements.deviceSelect.disabled = busy;
+        elements.refreshButton.disabled = busy;
+        elements.clearDeviceButton.disabled = !hasDevice || source !== "android" || busy;
+        elements.downloadButton.disabled = logs.length === 0;
+        elements.appOnly.disabled = busy || requiresApp;
+        elements.packageSelect.disabled = busy || !needsApp || !hasDevice;
+        elements.packageInput.hidden = !needsApp || !manualApp;
+        elements.packageInput.disabled = busy || !needsApp || !manualApp;
+        elements.refreshAppsButton.disabled = busy || !needsApp || !hasDevice;
+        elements.installApkButton.disabled = source !== "android" || !hasDevice || !selectedApkFile || busy;
+        elements.clearApkButton.disabled = apkInstalling || apkLinkInstalling;
+        elements.apkDropZone.setAttribute("aria-disabled", apkInstalling || apkLinkInstalling ? "true" : "false");
+        elements.androidInstallUrl.disabled = busy;
+        elements.installAndroidLinkButton.disabled = source !== "android" || !hasDevice || !elements.androidInstallUrl.value.trim() || busy;
+        elements.iosInstallUrl.disabled = busy;
+        elements.installIosButton.disabled = source !== "ios-device" || !hasDevice || !elements.iosInstallUrl.value.trim() || busy;
+      };
+
+      const parseLevel = (line) => {
+        const androidMatch = line.match(/^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+([VDIWEF])\s+/);
+        if (androidMatch) {
+          lastParsedLevel = androidMatch[1];
+          return androidMatch[1];
+        }
+        if (captureSource === "android") return lastParsedLevel;
+
+        const iosMatch = line.match(/^\d{4}-\d{2}-\d{2}.+?\s(Df|[DIWEF])\s+\S+\[\d+/);
+        if (iosMatch) return iosMatch[1] === "Df" ? "I" : iosMatch[1];
+        if (/\b(fatal|fault|crash)\b/i.test(line)) return "F";
+        if (/\b(error|exception|assert(?:ion)?)\b/i.test(line)) return "E";
+        if (/\b(warn(?:ing)?)\b/i.test(line)) return "W";
+        if (/\bdebug\b/i.test(line)) return "D";
+        if (/\binfo\b/i.test(line)) return "I";
+        return "?";
+      };
+
+      const analyticsTimestamp = (line) => {
+        const fullDate = line.match(/^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)/);
+        if (fullDate) return fullDate[1];
+        const androidDate = line.match(/^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)/);
+        return androidDate?.[1] || "";
+      };
+
+      const parseAnalyticsParameters = (rawParameters) => {
+        if (!rawParameters) return [];
+        const parameters = [];
+        for (const rawParameter of rawParameters.split("|")) {
+          const parameter = rawParameter.trim();
+          if (!parameter) continue;
+          const match = parameter.match(/^key=([^,]+),value=(.*)$/);
+          if (match) parameters.push({ key: match[1].trim(), value: match[2].trim() });
+        }
+        return parameters;
+      };
+
+      const parseAnalyticsLog = (line) => {
+        if (!runtimeConfig.analytics.enabled || !analyticsLogMarker) return null;
+        const markerIndex = line.toLocaleLowerCase().indexOf(analyticsLogMarker);
+        if (markerIndex < 0) return null;
+
+        const markerLength = runtimeConfig.analytics.marker.length;
+        const payload = line.slice(markerIndex + markerLength).trim();
+        if (!payload) return null;
+        if (runtimeConfig.analytics.parser === "plain") {
+          return {
+            eventName: payload,
+            platform: "Analytics",
+            parameters: [],
+            timestamp: analyticsTimestamp(line)
+          };
+        }
+
+        const platform = runtimeConfig.analytics.platforms.find(name =>
+          payload.slice(0, name.length + 1).toLocaleLowerCase() === `${name}:`.toLocaleLowerCase()
+        );
+        if (!platform) return null;
+        const eventPayload = payload.slice(platform.length + 1).trim();
+        const singleParameterMatch = eventPayload.match(/^eventName=([^,]+),Name=([^,]+),Value=(.*)$/i);
+        if (singleParameterMatch) {
+          return {
+            eventName: singleParameterMatch[1].trim(),
+            platform,
+            parameters: [{ key: singleParameterMatch[2].trim(), value: singleParameterMatch[3].trim() }],
+            timestamp: analyticsTimestamp(line)
+          };
+        }
+
+        const parameterSeparator = eventPayload.indexOf(":");
+        const eventName = (parameterSeparator < 0 ? eventPayload : eventPayload.slice(0, parameterSeparator)).trim();
+        if (!eventName) return null;
+        return {
+          eventName,
+          platform,
+          parameters: parameterSeparator < 0 ? [] : parseAnalyticsParameters(eventPayload.slice(parameterSeparator + 1)),
+          timestamp: analyticsTimestamp(line)
+        };
+      };
+
+      const addLog = (line) => {
+        const analyticsData = parseAnalyticsLog(line);
+        const isAnalytics = Boolean(analyticsLogMarker && line.toLocaleLowerCase().includes(analyticsLogMarker));
+        logs.push({
+          number: nextLineNumber++,
+          text: line,
+          level: parseLevel(line),
+          analytics: isAnalytics,
+          analyticsData
+        });
+        if (logs.length > MAX_LINES) logs.splice(0, logs.length - MAX_LINES);
+        updateButtons();
+        if (!paused) scheduleRender();
+        else updateCount();
+      };
+
+      const enabledLevels = () => new Set(elements.levelInputs.filter(input => input.checked).map(input => input.value));
+
+      const currentFilter = () => elements.searchInput.value.trim().toLocaleLowerCase();
+
+      const matchesFilters = (log, levels, filter, analyticsOnly) => {
+        return levels.has(log.level)
+          && (!analyticsOnly || log.analytics)
+          && (!filter || log.text.toLocaleLowerCase().includes(filter));
+      };
+
+      const getVisibleLogs = (
+        levels = enabledLevels(),
+        filter = currentFilter(),
+        analyticsOnly = elements.analyticsOnly.checked
+      ) => {
+        return logs.filter(log => matchesFilters(log, levels, filter, analyticsOnly));
+      };
+
+      const appendHighlightedText = (target, text, filter) => {
+        if (!filter) {
+          target.textContent = text;
+          return;
+        }
+        const haystack = text.toLocaleLowerCase();
+        let cursor = 0;
+        let matchIndex = haystack.indexOf(filter);
+        while (matchIndex !== -1) {
+          target.append(document.createTextNode(text.slice(cursor, matchIndex)));
+          const mark = document.createElement("mark");
+          mark.textContent = text.slice(matchIndex, matchIndex + filter.length);
+          target.append(mark);
+          cursor = matchIndex + filter.length;
+          matchIndex = haystack.indexOf(filter, cursor);
+        }
+        target.append(document.createTextNode(text.slice(cursor)));
+      };
+
+      const createAnalyticsElement = (log, filter) => {
+        const data = log.analyticsData;
+        const row = document.createElement("article");
+        row.className = `log-line analytics-card level-${log.level === "?" ? "other" : log.level}`;
+        row.dataset.number = String(log.number);
+        row.title = log.text;
+
+        const number = document.createElement("span");
+        number.className = "line-no";
+        number.textContent = log.number;
+
+        const panel = document.createElement("div");
+        panel.className = "analytics-panel";
+        panel.setAttribute("aria-label", `${data.eventName} 埋点，${data.parameters.length} 个参数`);
+
+        const header = document.createElement("header");
+        header.className = "analytics-header";
+        const name = document.createElement("span");
+        name.className = "analytics-name";
+        appendHighlightedText(name, data.eventName, filter);
+        const platform = document.createElement("span");
+        platform.className = "analytics-platform";
+        appendHighlightedText(platform, data.platform, filter);
+        header.append(name, platform);
+        if (data.timestamp) {
+          const timestamp = document.createElement("time");
+          timestamp.className = "analytics-time";
+          appendHighlightedText(timestamp, data.timestamp, filter);
+          header.append(timestamp);
+        }
+        panel.append(header);
+
+        if (data.parameters.length) {
+          const parameters = document.createElement("div");
+          parameters.className = "analytics-params";
+          for (const parameter of data.parameters) {
+            const item = document.createElement("span");
+            item.className = "analytics-param";
+            const key = document.createElement("span");
+            key.className = "analytics-key";
+            appendHighlightedText(key, `${parameter.key}:`, filter);
+            const value = document.createElement("span");
+            value.className = "analytics-value";
+            appendHighlightedText(value, parameter.value, filter);
+            item.append(key, value);
+            parameters.append(item);
+          }
+          panel.append(parameters);
+        } else {
+          const noParameters = document.createElement("div");
+          noParameters.className = "analytics-no-params";
+          noParameters.textContent = "无参数";
+          panel.append(noParameters);
+        }
+
+        row.append(number, panel);
+        return row;
+      };
+
+      const createLogElement = (log, filter) => {
+        if (log.analyticsData) return createAnalyticsElement(log, filter);
+        const row = document.createElement("div");
+        row.className = `log-line level-${log.level === "?" ? "other" : log.level}`;
+        row.dataset.number = String(log.number);
+        const number = document.createElement("span");
+        number.className = "line-no";
+        number.textContent = log.number;
+        const text = document.createElement("span");
+        text.className = "line-text";
+        appendHighlightedText(text, log.text, filter);
+        row.append(number, text);
+        return row;
+      };
+
+      const render = () => {
+        renderScheduled = false;
+        if (paused) return;
+        const shouldStick = elements.autoScroll.checked || elements.logView.scrollHeight - elements.logView.scrollTop - elements.logView.clientHeight < 60;
+        const levels = enabledLevels();
+        const filter = currentFilter();
+        const analyticsOnly = elements.analyticsOnly.checked;
+        const visible = getVisibleLogs(levels, filter, analyticsOnly);
+        const signature = `${filter}\u0000${analyticsOnly ? "analytics" : "all"}\u0000${[...levels].sort().join("")}`;
+        const fullRender = forceFullRender || signature !== renderedFilterSignature;
+
+        if (fullRender) {
+          const fragment = document.createDocumentFragment();
+          for (const log of visible) fragment.append(createLogElement(log, filter));
+          elements.logLines.replaceChildren(fragment);
+          forceFullRender = false;
+          renderedFilterSignature = signature;
+        } else {
+          const fragment = document.createDocumentFragment();
+          for (const log of logs) {
+            if (log.number <= renderedThrough) continue;
+            if (matchesFilters(log, levels, filter, analyticsOnly)) {
+              fragment.append(createLogElement(log, filter));
+            }
+          }
+          elements.logLines.append(fragment);
+          const firstRetainedNumber = logs[0]?.number ?? nextLineNumber;
+          while (elements.logLines.firstElementChild && Number(elements.logLines.firstElementChild.dataset.number) < firstRetainedNumber) {
+            elements.logLines.firstElementChild.remove();
+          }
+        }
+        renderedThrough = logs.at(-1)?.number ?? 0;
+        elements.emptyState.hidden = visible.length > 0;
+        if (logs.length && !visible.length) {
+          elements.emptyState.querySelector("strong").textContent = "没有匹配当前筛选条件的日志";
+          elements.emptyState.querySelector("span").textContent = analyticsOnly
+            ? `尚未发现 ${runtimeConfig.analytics.marker} 埋点日志，可操作 App 触发埋点或关闭“只看埋点”。`
+            : "可修改关键词或重新勾选日志级别。";
+        } else if (!logs.length) {
+          elements.emptyState.querySelector("strong").textContent = captureState === "running" ? "等待设备输出日志…" : "选择日志来源和设备，然后点“开始”";
+          elements.emptyState.querySelector("span").textContent = "日志会实时显示在这里，可随时筛选或下载。";
+        }
+        updateCount(visible.length);
+        if (shouldStick) elements.logView.scrollTop = elements.logView.scrollHeight;
+      };
+
+      const scheduleRender = () => {
+        if (renderScheduled) return;
+        renderScheduled = true;
+        requestAnimationFrame(render);
+      };
+
+      const updateCount = (visibleCount = getVisibleLogs().length) => {
+        elements.lineCount.textContent = visibleCount === logs.length ? `${logs.length.toLocaleString()} 行` : `${visibleCount.toLocaleString()} / ${logs.length.toLocaleString()} 行`;
+      };
+
+      const clearView = () => {
+        logs = [];
+        nextLineNumber = 1;
+        lastParsedLevel = "?";
+        forceFullRender = true;
+        renderedThrough = 0;
+        scheduleRender();
+        updateButtons();
+      };
+
+      const startCapture = async () => {
+        const source = elements.sourceSelect.value;
+        const serial = elements.deviceSelect.value;
+        if (!serial) return;
+        const appId = (elements.appOnly.checked || source === "ios-device") ? selectedAppId() : "";
+        captureSource = source;
+        hideNotice();
+        elements.startButton.disabled = true;
+        try {
+          const { status } = await api("/api/start", {
+            method: "POST",
+            body: JSON.stringify({ source, serial, appId })
+          });
+          updateCaptureStatus(status);
+          elements.logView.focus({ preventScroll: true });
+        } catch (error) {
+          showNotice(error.message);
+          updateButtons();
+        }
+      };
+
+      const stopCapture = async () => {
+        elements.stopButton.disabled = true;
+        try {
+          const { status } = await api("/api/stop", { method: "POST", body: "{}" });
+          updateCaptureStatus(status);
+        } catch (error) {
+          showNotice(error.message);
+          updateButtons();
+        }
+      };
+
+      const togglePause = () => {
+        paused = !paused;
+        elements.pauseButton.textContent = paused ? "继续显示" : "暂停显示";
+        elements.pausedBadge.hidden = !paused;
+        if (!paused) scheduleRender();
+      };
+
+      const clearDeviceLogs = async () => {
+        const source = elements.sourceSelect.value;
+        const serial = elements.deviceSelect.value;
+        if (source !== "android" || !serial || !window.confirm("确定清空这台设备的整个 logcat 缓冲区吗？此操作无法撤销。")) return;
+        elements.clearDeviceButton.disabled = true;
+        try {
+          await api("/api/clear-device", { method: "POST", body: JSON.stringify({ source, serial }) });
+          clearView();
+          elements.statusMessage.textContent = "设备日志缓冲区已清空";
+        } catch (error) {
+          showNotice(error.message);
+        } finally {
+          updateButtons();
+        }
+      };
+
+      const downloadLogs = () => {
+        const visible = getVisibleLogs();
+        if (!visible.length) {
+          showNotice("当前筛选结果为空，没有可下载的日志。");
+          return;
+        }
+        const serial = (captureSerial || elements.deviceSelect.value || "device").replace(/[^a-zA-Z0-9._-]+/g, "-");
+        const source = captureSource.replace(/[^a-zA-Z0-9._-]+/g, "-");
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const content = `${visible.map(log => log.text).join("\n")}\n`;
+        const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${source}-log-${serial}-${stamp}.txt`;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+
+      const connectStream = () => {
+        const stream = new EventSource("/api/stream");
+        stream.onopen = () => {
+          elements.streamState.textContent = "服务已连接";
+          elements.streamState.className = "stream-state connected";
+        };
+        stream.onerror = () => {
+          elements.streamState.textContent = "服务重连中…";
+          elements.streamState.className = "stream-state disconnected";
+        };
+        stream.addEventListener("log", event => {
+          const payload = JSON.parse(event.data);
+          addLog(payload.line || "");
+        });
+        stream.addEventListener("status", event => updateCaptureStatus(JSON.parse(event.data)));
+      };
+
+      elements.sourceSelect.addEventListener("change", () => {
+        appRequestId += 1;
+        elements.deviceSelect.replaceChildren(new Option("正在查找设备…", ""));
+        resetAppOptions();
+        updateSourceUi();
+        updateButtons();
+        refreshDevices();
+      });
+      elements.refreshButton.addEventListener("click", refreshDevices);
+      elements.deviceSelect.addEventListener("change", () => {
+        renderApkSelection();
+        renderAndroidLinkInstaller();
+        renderIosInstaller();
+        updateButtons();
+        refreshApps();
+      });
+      elements.apkDropZone.addEventListener("click", () => {
+        if (!apkInstalling && !apkLinkInstalling) elements.apkFileInput.click();
+      });
+      elements.apkDropZone.addEventListener("keydown", event => {
+        if (!apkInstalling && !apkLinkInstalling && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          elements.apkFileInput.click();
+        }
+      });
+      elements.apkFileInput.addEventListener("change", () => setApkFile(elements.apkFileInput.files?.[0]));
+      elements.apkDropZone.addEventListener("dragover", event => {
+        if (apkInstalling || apkLinkInstalling) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        elements.apkDropZone.classList.add("dragging");
+      });
+      elements.apkDropZone.addEventListener("dragleave", event => {
+        const relatedTarget = event.relatedTarget;
+        if (!(relatedTarget instanceof Node) || !elements.apkDropZone.contains(relatedTarget)) {
+          elements.apkDropZone.classList.remove("dragging");
+        }
+      });
+      elements.apkDropZone.addEventListener("drop", event => {
+        event.preventDefault();
+        elements.apkDropZone.classList.remove("dragging");
+        if (!apkInstalling && !apkLinkInstalling) setApkFile(event.dataTransfer.files?.[0]);
+      });
+      document.addEventListener("dragover", event => {
+        if ([...(event.dataTransfer?.types || [])].includes("Files")) event.preventDefault();
+      });
+      document.addEventListener("drop", event => {
+        if ([...(event.dataTransfer?.types || [])].includes("Files")) event.preventDefault();
+      });
+      elements.clearApkButton.addEventListener("click", clearApkFile);
+      elements.installApkButton.addEventListener("click", installApk);
+      elements.androidInstallUrl.addEventListener("input", updateButtons);
+      elements.androidInstallUrl.addEventListener("keydown", event => {
+        if (event.key === "Enter" && !elements.installAndroidLinkButton.disabled) {
+          event.preventDefault();
+          installApkFromLink();
+        }
+      });
+      elements.installAndroidLinkButton.addEventListener("click", installApkFromLink);
+      elements.iosInstallUrl.addEventListener("input", updateButtons);
+      elements.iosInstallUrl.addEventListener("keydown", event => {
+        if (event.key === "Enter" && !elements.installIosButton.disabled) {
+          event.preventDefault();
+          installIosFromLink();
+        }
+      });
+      elements.installIosButton.addEventListener("click", installIosFromLink);
+      elements.appOnly.addEventListener("change", updateButtons);
+      elements.packageSelect.addEventListener("change", () => {
+        updateButtons();
+        if (elements.packageSelect.value === MANUAL_APP_VALUE) elements.packageInput.focus();
+      });
+      elements.packageInput.addEventListener("input", updateButtons);
+      elements.refreshAppsButton.addEventListener("click", refreshApps);
+      elements.startButton.addEventListener("click", startCapture);
+      elements.stopButton.addEventListener("click", stopCapture);
+      elements.pauseButton.addEventListener("click", togglePause);
+      elements.clearViewButton.addEventListener("click", clearView);
+      elements.clearDeviceButton.addEventListener("click", clearDeviceLogs);
+      elements.downloadButton.addEventListener("click", downloadLogs);
+      elements.reconnectAdbButton.addEventListener("click", reconnectTools);
+      elements.dismissNotice.addEventListener("click", hideNotice);
+      elements.autoScroll.addEventListener("change", () => {
+        if (elements.autoScroll.checked) elements.logView.scrollTop = elements.logView.scrollHeight;
+      });
+      elements.levelInputs.forEach(input => input.addEventListener("change", () => {
+        forceFullRender = true;
+        scheduleRender();
+      }));
+      elements.analyticsOnly.addEventListener("change", () => {
+        forceFullRender = true;
+        scheduleRender();
+      });
+      elements.searchInput.addEventListener("input", () => {
+        window.clearTimeout(filterTimer);
+        filterTimer = window.setTimeout(() => {
+          forceFullRender = true;
+          scheduleRender();
+        }, 100);
+      });
+      document.addEventListener("keydown", event => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "f") {
+          event.preventDefault();
+          elements.searchInput.focus();
+          elements.searchInput.select();
+        }
+      });
+
+      const applyRuntimeConfig = (config) => {
+        runtimeConfig = config;
+        analyticsLogMarker = config.analytics.enabled ? config.analytics.marker.toLocaleLowerCase() : "";
+        document.title = config.displayName;
+        elements.brandTitle.textContent = config.displayName;
+        elements.analyticsControl.hidden = !config.analytics.enabled;
+        elements.analyticsOnly.checked = false;
+        if (config.analytics.enabled) {
+          elements.analyticsControl.title = `只显示包含 ${config.analytics.marker} 标记的埋点日志`;
+          elements.analyticsOnlyText.textContent = "只看埋点";
+        }
+        resetAppOptions(defaultAppId());
+      };
+
+      const initialize = async () => {
+        try {
+          const { config } = await api("/api/config");
+          applyRuntimeConfig(config);
+        } catch (error) {
+          applyRuntimeConfig(FALLBACK_CONFIG);
+          showNotice(`Profile 加载失败：${error.message}`);
+        }
+        connectStream();
+        updateSourceUi();
+        refreshDevices();
+        api("/api/status").then(({ status }) => updateCaptureStatus(status)).catch(error => showNotice(error.message));
+      };
+
+      initialize();
+    })();
+  </script>
+</body>
+</html>

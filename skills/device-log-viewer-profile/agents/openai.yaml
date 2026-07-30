@@ -1,0 +1,4 @@
+interface:
+  display_name: "Device Log Viewer Profile"
+  short_description: "扫描本地项目并生成 DeviceLogViewer Profile 配置"
+  default_prompt: "使用 $device-log-viewer-profile 扫描当前项目并生成 DeviceLogViewer Profile。"

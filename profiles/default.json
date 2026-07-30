@@ -1,0 +1,23 @@
+{
+  "$schema": "../schemas/device-log-viewer-profile.schema.json",
+  "schemaVersion": 1,
+  "id": "default",
+  "displayName": "Device Log Viewer",
+  "defaultPort": 8765,
+  "apps": {
+    "android": {
+      "default": "",
+      "presets": []
+    },
+    "ios": {
+      "default": "",
+      "presets": []
+    }
+  },
+  "analytics": {
+    "enabled": false,
+    "marker": "",
+    "parser": "plain",
+    "platforms": []
+  }
+}
