@@ -7,6 +7,8 @@
 ## 主要功能
 
 - 实时查看 Android、iOS 模拟器和 iPhone/iPad 真机日志。
+- 在网页中以 H.264 低延迟串流查看 Android 手机画面，支持 30/60 FPS 档位。
+- 一键截取 Android 手机 PNG，并通过 `scrcpy` 录制原始质量 MP4。
 - Android 可只看指定 App；App 被杀后仍保持 Logcat 连接，重新启动 App 时自动跟踪新 PID。
 - 自动读取设备上已安装的第三方 App，也支持手动输入包名或 Bundle ID。
 - 按关键词及 `V / D / I / W / E / F` 日志级别筛选。
@@ -26,6 +28,7 @@
 | --- | --- |
 | 基础页面与服务 | macOS、Python 3.9+；无需第三方 Python 包 |
 | Android 日志与装包 | Android Platform Tools（`adb`） |
+| Android 流畅画面与录屏 | `scrcpy`；网页实时播放还需要 `ffmpeg` |
 | iOS 日志与装包 | 完整版 Xcode（`xcrun simctl`、`devicectl`） |
 | 远程链接安装 | 无需登录即可访问的公网 HTTP(S) 分发地址 |
 
@@ -56,6 +59,12 @@ Android：
 1. 在设备上开启开发者选项和 USB 调试。
 2. 连接设备并在授权弹窗中点击“允许”。
 3. 可通过 `adb devices` 确认设备状态为 `device`。
+
+流畅设备画面还需要安装 `scrcpy` 和 `ffmpeg`。使用 Homebrew：
+
+```bash
+brew install scrcpy ffmpeg
+```
 
 iOS：
 
@@ -109,6 +118,18 @@ iOS 模拟器指定 App 模式和 iPhone/iPad 真机模式，需要通过 Xcode 
 - Profile 启用埋点功能时，可勾选“只看埋点”。
 - “暂停显示”只停止页面刷新，后台仍继续接收日志。
 - “下载 TXT”保存当前筛选结果，不会改写原始日志文本。
+
+### 查看、截图和录制 Android 手机画面
+
+1. 选择 Android 和目标设备。
+2. 点击工具栏中的“设备画面”，页面右侧会展开手机画面区域；窄屏浏览器会使用全屏画面面板，点击“关闭”即可返回日志。
+3. 选择画质档位，然后点击“开始实时画面”。默认档位上限为 60 FPS、1920 像素和 12 Mbps。
+4. 点击“截图 PNG”会同时在页面显示截图并下载原始 PNG。
+5. 点击“开始录屏”；完成后点击“停止并下载录屏”，工具会封装并下载 MP4。
+
+实时预览使用 `scrcpy` 在 Android 设备端编码 H.264，由本机 `ffmpeg` 无损转换为浏览器可播放的 fragmented MP4，并通过本地 WebSocket 传输。它不是连续截图，因此延迟、CPU 和 USB 带宽占用明显低于高帧率图片方案。
+
+实时预览和录屏可以同时运行，此时手机可能同时使用两个视频编码会话。低端设备如果出现编码失败、发热或卡顿，请停止录屏，或改用“均衡 / 省流”档位。受 Android 安全策略保护的 `FLAG_SECURE` 页面和 DRM 内容可能显示为黑屏。
 
 ### 安装 Android APK
 
@@ -278,6 +299,24 @@ adb devices
 ```bash
 python3 server.py --adb /absolute/path/to/adb
 ```
+
+### “设备画面”提示缺少 `scrcpy` 或 `ffmpeg`
+
+执行：
+
+```bash
+brew install scrcpy ffmpeg
+```
+
+安装完成后打开“设备画面”，或点击错误提示中的“重新检测工具”。工具也会自动检查 `/opt/homebrew/bin` 和 `/usr/local/bin`。
+
+### 实时画面连接失败或延迟不断增加
+
+- 确认手机已解锁，并且 `adb devices` 中状态为 `device`。
+- 改用“均衡 · 30 FPS”档位。
+- 停止其他正在运行的 `scrcpy` 或手机录屏程序。
+- 更换数据线或 USB 接口，避免只支持充电的线材。
+- 旋转手机后如果画面尺寸没有正确更新，停止并重新开始实时画面。
 
 ### Android 设备显示 `unauthorized`
 

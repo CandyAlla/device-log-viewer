@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import errno
+import hashlib
 import html
 import ipaddress
 import json
@@ -12,6 +14,7 @@ import os
 import plistlib
 import queue
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -53,9 +56,11 @@ ANDROID_THREADTIME_LINE = re.compile(
     r"^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+(\d+)\s+\d+\s+[VDIWEF]\s+"
 )
 TOOL_ID = "device-log-viewer"
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.1.0"
 PROFILE_SCHEMA_VERSION = 1
 ANALYTICS_PARSERS = {"plain", "gamefoundation-eventlog"}
+SCREEN_MAX_RECORDING_BYTES = 4 * 1024 * 1024 * 1024
+SCREEN_STREAM_CHUNK_BYTES = 32 * 1024
 
 
 class ApiError(RuntimeError):
@@ -214,6 +219,30 @@ def find_xcrun() -> str | None:
         return candidate
     fallback = Path("/usr/bin/xcrun")
     return str(fallback) if fallback.is_file() and os.access(fallback, os.X_OK) else None
+
+
+def _find_command(name: str, candidates: tuple[Path, ...]) -> str | None:
+    path_match = shutil.which(name)
+    if path_match:
+        return str(Path(path_match).resolve())
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate.resolve())
+    return None
+
+
+def find_scrcpy() -> str | None:
+    return _find_command(
+        "scrcpy",
+        (Path("/opt/homebrew/bin/scrcpy"), Path("/usr/local/bin/scrcpy")),
+    )
+
+
+def find_ffmpeg() -> str | None:
+    return _find_command(
+        "ffmpeg",
+        (Path("/opt/homebrew/bin/ffmpeg"), Path("/usr/local/bin/ffmpeg")),
+    )
 
 
 def validate_source(source: str) -> str:
@@ -1064,6 +1093,467 @@ def android_logcat_pid(line: str) -> str:
     return match.group(1) if match else ""
 
 
+def _terminate_process_group(
+    process: subprocess.Popen[Any] | None,
+    first_signal: signal.Signals = signal.SIGTERM,
+    timeout: float = 3.0,
+) -> None:
+    if not process or process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, first_signal)
+    except (OSError, ProcessLookupError):
+        try:
+            process.send_signal(first_signal)
+        except OSError:
+            return
+    try:
+        process.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            process.kill()
+        except OSError:
+            return
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _drain_process_pipe(pipe: Any, output: list[str]) -> None:
+    if pipe is None:
+        return
+    try:
+        for raw_line in iter(pipe.readline, b""):
+            if isinstance(raw_line, bytes):
+                line = raw_line.decode("utf-8", errors="replace")
+            else:
+                line = str(raw_line)
+            line = line.strip()
+            if line:
+                output.append(line)
+                if len(output) > 80:
+                    del output[:-80]
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+class AndroidScreenManager:
+    def __init__(self, adb_path: str | None) -> None:
+        self._lock = threading.RLock()
+        self.adb_path = adb_path
+        self.scrcpy_path = find_scrcpy()
+        self.ffmpeg_path = find_ffmpeg()
+        self._streams: dict[str, dict[str, Any]] = {}
+        self._recording_process: subprocess.Popen[Any] | None = None
+        self._recording_path: Path | None = None
+        self._recording_serial = ""
+        self._recording_started_at = 0.0
+        self._recording_log: list[str] = []
+        self._downloads: dict[str, dict[str, Any]] = {}
+        self._last_error = ""
+
+    def refresh_tools(self, adb_path: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            if adb_path is not None:
+                self.adb_path = adb_path
+            else:
+                self.adb_path = find_adb()
+            self.scrcpy_path = find_scrcpy()
+            self.ffmpeg_path = find_ffmpeg()
+        return self.status()
+
+    def _reap_recording_locked(self) -> None:
+        process = self._recording_process
+        if not process or process.poll() is None:
+            return
+        detail = "；".join(self._recording_log[-4:])
+        self._last_error = detail or f"scrcpy 录屏意外结束（退出码 {process.returncode}）"
+        if self._recording_path:
+            self._recording_path.unlink(missing_ok=True)
+        self._recording_process = None
+        self._recording_path = None
+        self._recording_serial = ""
+        self._recording_started_at = 0.0
+
+    def _cleanup_downloads_locked(self) -> None:
+        cutoff = time.time() - 60 * 60
+        for token, item in tuple(self._downloads.items()):
+            if float(item.get("createdAt", 0)) >= cutoff:
+                continue
+            path = item.get("path")
+            if isinstance(path, Path):
+                path.unlink(missing_ok=True)
+            self._downloads.pop(token, None)
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            self._reap_recording_locked()
+            self._cleanup_downloads_locked()
+            return {
+                "adbAvailable": bool(self.adb_path),
+                "scrcpyAvailable": bool(self.scrcpy_path),
+                "scrcpyPath": self.scrcpy_path or "",
+                "ffmpegAvailable": bool(self.ffmpeg_path),
+                "ffmpegPath": self.ffmpeg_path or "",
+                "liveAvailable": bool(self.adb_path and self.scrcpy_path and self.ffmpeg_path),
+                "recordingAvailable": bool(self.adb_path and self.scrcpy_path),
+                "streaming": bool(self._streams),
+                "streamingSerials": sorted({str(item["serial"]) for item in self._streams.values()}),
+                "recording": bool(self._recording_process),
+                "recordingSerial": self._recording_serial,
+                "recordingStartedAt": int(self._recording_started_at * 1000) if self._recording_started_at else 0,
+                "lastError": self._last_error,
+            }
+
+    def _validate_device(self, serial: str) -> str:
+        serial = serial.strip()
+        if not serial or len(serial) > 200 or any(char.isspace() for char in serial):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Android 设备标识无效。")
+        if not self.adb_path:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "未找到 adb，请先安装 Android Platform Tools。")
+        available = {device["serial"]: device for device in list_devices(self.adb_path)}
+        device = available.get(serial)
+        if not device:
+            raise ApiError(HTTPStatus.NOT_FOUND, "Android 设备已断开，请刷新设备列表。")
+        if not device.get("available"):
+            raise ApiError(
+                HTTPStatus.CONFLICT,
+                f"设备当前状态为 {device['state']}，请先解锁并授权 USB 调试。",
+            )
+        return serial
+
+    @staticmethod
+    def validate_quality(max_fps: int, max_size: int, bit_rate: int) -> tuple[int, int, int]:
+        if max_fps not in {30, 60}:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "实时画面帧率仅支持 30 或 60 FPS。")
+        if max_size not in {1280, 1600, 1920}:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "实时画面尺寸无效。")
+        if not 2_000_000 <= bit_rate <= 20_000_000:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "实时画面码率必须在 2–20 Mbps 之间。")
+        return max_fps, max_size, bit_rate
+
+    def screenshot(self, serial: str) -> bytes:
+        serial = self._validate_device(serial)
+        assert self.adb_path is not None
+        try:
+            result = subprocess.run(
+                [self.adb_path, "-s", serial, "exec-out", "screencap", "-p"],
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ApiError(HTTPStatus.GATEWAY_TIMEOUT, "手机截图超时，请检查 USB 连接。") from exc
+        except OSError as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法执行手机截图：{exc}") from exc
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip() or f"退出码 {result.returncode}"
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"手机截图失败：{detail}")
+        if not result.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "手机返回的截图不是有效 PNG。")
+        if len(result.stdout) > 64 * 1024 * 1024:
+            raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "手机截图超过 64 MB，无法显示。")
+        return result.stdout
+
+    def _scrcpy_base_command(
+        self,
+        serial: str,
+        max_fps: int,
+        max_size: int,
+        bit_rate: int,
+    ) -> list[str]:
+        if not self.scrcpy_path:
+            raise ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "未找到 scrcpy。请先执行 brew install scrcpy，再点击重新检测工具。",
+            )
+        return [
+            self.scrcpy_path,
+            "--serial",
+            serial,
+            "--no-playback",
+            "--no-window",
+            "--no-control",
+            "--no-audio",
+            "--video-codec=h264",
+            f"--max-fps={max_fps}",
+            f"--max-size={max_size}",
+            f"--video-bit-rate={bit_rate}",
+        ]
+
+    def start_stream(
+        self,
+        serial: str,
+        max_fps: int,
+        max_size: int,
+        bit_rate: int,
+    ) -> tuple[str, subprocess.Popen[Any]]:
+        serial = self._validate_device(serial)
+        max_fps, max_size, bit_rate = self.validate_quality(max_fps, max_size, bit_rate)
+        if not self.ffmpeg_path:
+            raise ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "未找到 ffmpeg。请先执行 brew install ffmpeg，再点击重新检测工具。",
+            )
+        self.stop_streams(serial)
+
+        scrcpy_log: list[str] = []
+        ffmpeg_log: list[str] = []
+        scrcpy_command = [
+            *self._scrcpy_base_command(serial, max_fps, max_size, bit_rate),
+            "--record=/dev/stdout",
+            "--record-format=mkv",
+        ]
+        try:
+            scrcpy_process = subprocess.Popen(
+                scrcpy_command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法启动 scrcpy：{exc}") from exc
+        assert scrcpy_process.stdout is not None
+        threading.Thread(
+            target=_drain_process_pipe,
+            args=(scrcpy_process.stderr, scrcpy_log),
+            name="screen-scrcpy-log",
+            daemon=True,
+        ).start()
+
+        ffmpeg_command = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-probesize",
+            "512K",
+            "-analyzeduration",
+            "0",
+            "-i",
+            "pipe:0",
+            "-map",
+            "0:v:0",
+            "-an",
+            "-c:v",
+            "copy",
+            "-movflags",
+            "empty_moov+default_base_moof+frag_every_frame",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ]
+        try:
+            ffmpeg_process = subprocess.Popen(
+                ffmpeg_command,
+                stdin=scrcpy_process.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+            scrcpy_process.stdout.close()
+        except OSError as exc:
+            _terminate_process_group(scrcpy_process)
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法启动 ffmpeg：{exc}") from exc
+        threading.Thread(
+            target=_drain_process_pipe,
+            args=(ffmpeg_process.stderr, ffmpeg_log),
+            name="screen-ffmpeg-log",
+            daemon=True,
+        ).start()
+
+        time.sleep(0.45)
+        if scrcpy_process.poll() is not None or ffmpeg_process.poll() is not None:
+            _terminate_process_group(ffmpeg_process)
+            _terminate_process_group(scrcpy_process)
+            detail = "；".join((scrcpy_log + ffmpeg_log)[-5:]) or "进程启动后立即退出。"
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"实时画面启动失败：{detail}")
+
+        token = secrets.token_urlsafe(18)
+        with self._lock:
+            self._streams[token] = {
+                "serial": serial,
+                "scrcpy": scrcpy_process,
+                "ffmpeg": ffmpeg_process,
+            }
+            self._last_error = ""
+        return token, ffmpeg_process
+
+    def stop_stream(self, token: str) -> None:
+        with self._lock:
+            item = self._streams.pop(token, None)
+        if not item:
+            return
+        _terminate_process_group(item.get("ffmpeg"))
+        _terminate_process_group(item.get("scrcpy"))
+
+    def stop_streams(self, serial: str = "") -> None:
+        with self._lock:
+            tokens = [
+                token
+                for token, item in self._streams.items()
+                if not serial or str(item.get("serial", "")) == serial
+            ]
+        for token in tokens:
+            self.stop_stream(token)
+
+    def start_recording(
+        self,
+        serial: str,
+        max_fps: int,
+        max_size: int,
+        bit_rate: int,
+    ) -> dict[str, Any]:
+        serial = self._validate_device(serial)
+        max_fps, max_size, bit_rate = self.validate_quality(max_fps, max_size, bit_rate)
+        with self._lock:
+            self._reap_recording_locked()
+            if self._recording_process:
+                raise ApiError(HTTPStatus.CONFLICT, "已有手机录屏正在进行，请先停止。")
+
+        file_descriptor, temp_name = tempfile.mkstemp(prefix="device-log-viewer-screen-", suffix=".mp4")
+        os.close(file_descriptor)
+        recording_path = Path(temp_name)
+        recording_path.unlink(missing_ok=True)
+        command = [
+            *self._scrcpy_base_command(serial, max_fps, max_size, bit_rate),
+            f"--record={recording_path}",
+            "--record-format=mp4",
+        ]
+        recording_log: list[str] = []
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            recording_path.unlink(missing_ok=True)
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法启动 scrcpy 录屏：{exc}") from exc
+        threading.Thread(
+            target=_drain_process_pipe,
+            args=(process.stderr, recording_log),
+            name="screen-recording-log",
+            daemon=True,
+        ).start()
+        time.sleep(0.45)
+        if process.poll() is not None:
+            recording_path.unlink(missing_ok=True)
+            detail = "；".join(recording_log[-5:]) or f"退出码 {process.returncode}"
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"手机录屏启动失败：{detail}")
+
+        started_at = time.time()
+        with self._lock:
+            self._recording_process = process
+            self._recording_path = recording_path
+            self._recording_serial = serial
+            self._recording_started_at = started_at
+            self._recording_log = recording_log
+            self._last_error = ""
+        return self.status()
+
+    def stop_recording(self) -> dict[str, Any]:
+        with self._lock:
+            self._reap_recording_locked()
+            process = self._recording_process
+            recording_path = self._recording_path
+            serial = self._recording_serial
+            started_at = self._recording_started_at
+            recording_log = self._recording_log
+            if not process or not recording_path:
+                raise ApiError(HTTPStatus.CONFLICT, "当前没有正在进行的手机录屏。")
+            self._recording_process = None
+            self._recording_path = None
+            self._recording_serial = ""
+            self._recording_started_at = 0.0
+            self._recording_log = []
+
+        _terminate_process_group(process, signal.SIGINT, timeout=12)
+        if not recording_path.is_file() or recording_path.stat().st_size < 1024:
+            recording_path.unlink(missing_ok=True)
+            detail = "；".join(recording_log[-5:]) or "录屏文件为空。"
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"手机录屏保存失败：{detail}")
+        file_size = recording_path.stat().st_size
+        if file_size > SCREEN_MAX_RECORDING_BYTES:
+            recording_path.unlink(missing_ok=True)
+            raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "手机录屏超过 4 GB，已停止下载。")
+
+        token = secrets.token_urlsafe(24)
+        safe_serial = re.sub(r"[^A-Za-z0-9._-]+", "-", serial) or "android"
+        filename = f"android-screen-{safe_serial}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
+        with self._lock:
+            self._downloads[token] = {
+                "path": recording_path,
+                "filename": filename,
+                "createdAt": time.time(),
+            }
+        return {
+            "message": "手机录屏已完成",
+            "downloadUrl": f"/api/screen/recording?token={token}",
+            "filename": filename,
+            "fileSize": file_size,
+            "durationSeconds": max(0, round(time.time() - started_at, 1)),
+            "status": self.status(),
+        }
+
+    def recording_download(self, token: str) -> tuple[Path, str]:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{20,80}", token):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "录屏下载标识无效。")
+        with self._lock:
+            self._cleanup_downloads_locked()
+            item = self._downloads.get(token)
+            if not item:
+                raise ApiError(HTTPStatus.NOT_FOUND, "录屏文件不存在或下载链接已过期。")
+            path = item.get("path")
+            filename = str(item.get("filename", "android-screen.mp4"))
+        if not isinstance(path, Path) or not path.is_file():
+            raise ApiError(HTTPStatus.NOT_FOUND, "录屏文件不存在或已被清理。")
+        return path, filename
+
+    def discard_download(self, token: str) -> None:
+        with self._lock:
+            item = self._downloads.pop(token, None)
+        if item and isinstance(item.get("path"), Path):
+            item["path"].unlink(missing_ok=True)
+
+    def close(self) -> None:
+        self.stop_streams()
+        with self._lock:
+            process = self._recording_process
+            path = self._recording_path
+            self._recording_process = None
+            self._recording_path = None
+            downloads = tuple(self._downloads.values())
+            self._downloads.clear()
+        _terminate_process_group(process, signal.SIGINT, timeout=8)
+        if path:
+            path.unlink(missing_ok=True)
+        for item in downloads:
+            download_path = item.get("path")
+            if isinstance(download_path, Path):
+                download_path.unlink(missing_ok=True)
+
+
 class LogcatManager:
     def __init__(self, adb_path: str | None, xcrun_path: str | None) -> None:
         self.adb_path = adb_path
@@ -1573,6 +2063,10 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
         return self.server.manager  # type: ignore[attr-defined]
 
     @property
+    def screen(self) -> AndroidScreenManager:
+        return self.server.screen  # type: ignore[attr-defined]
+
+    @property
     def profile(self) -> dict[str, Any]:
         return self.server.profile  # type: ignore[attr-defined]
 
@@ -1588,6 +2082,90 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_binary(self, body: bytes, content_type: str, filename: str) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    @staticmethod
+    def _screen_quality(values: dict[str, list[str]]) -> tuple[int, int, int]:
+        try:
+            max_fps = int(values.get("maxFps", ["60"])[0])
+            max_size = int(values.get("maxSize", ["1920"])[0])
+            bit_rate = int(values.get("bitRate", ["12000000"])[0])
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "实时画面质量参数无效。") from exc
+        return AndroidScreenManager.validate_quality(max_fps, max_size, bit_rate)
+
+    @staticmethod
+    def _websocket_frame(payload: bytes, opcode: int = 0x2) -> bytes:
+        first_byte = 0x80 | (opcode & 0x0F)
+        length = len(payload)
+        if length < 126:
+            return bytes((first_byte, length)) + payload
+        if length <= 0xFFFF:
+            return bytes((first_byte, 126)) + length.to_bytes(2, "big") + payload
+        return bytes((first_byte, 127)) + length.to_bytes(8, "big") + payload
+
+    def _stream_screen_websocket(self, parsed_url: Any) -> None:
+        if self.headers.get("Upgrade", "").casefold() != "websocket":
+            raise ApiError(HTTPStatus.UPGRADE_REQUIRED, "实时画面必须通过 WebSocket 连接。")
+        websocket_key = self.headers.get("Sec-WebSocket-Key", "").strip()
+        if not websocket_key or self.headers.get("Sec-WebSocket-Version", "") != "13":
+            raise ApiError(HTTPStatus.BAD_REQUEST, "WebSocket 握手参数无效。")
+
+        query = parse_qs(parsed_url.query)
+        serial = query.get("serial", [""])[0]
+        max_fps, max_size, bit_rate = self._screen_quality(query)
+        token, ffmpeg_process = self.screen.start_stream(serial, max_fps, max_size, bit_rate)
+        accept_source = f"{websocket_key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11".encode("ascii")
+        websocket_accept = base64.b64encode(hashlib.sha1(accept_source).digest()).decode("ascii")
+
+        self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", websocket_accept)
+        self.end_headers()
+        self.close_connection = True
+
+        assert ffmpeg_process.stdout is not None
+        try:
+            while True:
+                read_chunk = getattr(ffmpeg_process.stdout, "read1", ffmpeg_process.stdout.read)
+                chunk = read_chunk(SCREEN_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                self.connection.sendall(self._websocket_frame(chunk))
+        except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+            pass
+        finally:
+            try:
+                self.connection.sendall(self._websocket_frame(b"", opcode=0x8))
+            except OSError:
+                pass
+            self.screen.stop_stream(token)
+
+    def _send_recording(self, token: str) -> None:
+        recording_path, filename = self.screen.recording_download(token)
+        try:
+            file_size = recording_path.stat().st_size
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            with recording_path.open("rb") as recording:
+                shutil.copyfileobj(recording, self.wfile, length=1024 * 1024)
+        finally:
+            self.screen.discard_download(token)
 
     def _read_json(self) -> dict[str, Any]:
         try:
@@ -1685,6 +2263,19 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
                 else:
                     apps = list_ios_device_apps(self.manager.xcrun_path, serial)
                 self._send_json({"ok": True, "apps": apps, "packages": [app["id"] for app in apps]})
+            elif path == "/api/screen/status":
+                self._send_json({"ok": True, "status": self.screen.status()})
+            elif path == "/api/screen/screenshot":
+                query = parse_qs(parsed_url.query)
+                serial = query.get("serial", [""])[0]
+                safe_serial = re.sub(r"[^A-Za-z0-9._-]+", "-", serial) or "android"
+                filename = f"android-screen-{safe_serial}-{time.strftime('%Y%m%d-%H%M%S')}.png"
+                self._send_binary(self.screen.screenshot(serial), "image/png", filename)
+            elif path == "/api/screen/recording":
+                token = parse_qs(parsed_url.query).get("token", [""])[0]
+                self._send_recording(token)
+            elif path == "/api/screen/stream":
+                self._stream_screen_websocket(parsed_url)
             elif path == "/api/status":
                 self._send_json(
                     {
@@ -1693,6 +2284,7 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
                         "version": TOOL_VERSION,
                         "profileId": self.profile["id"],
                         "status": self.manager.status(),
+                        "screenStatus": self.screen.status(),
                     }
                 )
             elif path == "/api/config":
@@ -1749,7 +2341,32 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, **result})
             elif path in {"/api/reconnect-tools", "/api/reconnect-adb"}:
                 source = str(payload.get("source", "android"))
-                self._send_json({"ok": True, "status": self.manager.refresh_tools(source)})
+                status = self.manager.refresh_tools(source)
+                self._send_json(
+                    {
+                        "ok": True,
+                        "status": status,
+                        "screenStatus": self.screen.refresh_tools(self.manager.adb_path),
+                    }
+                )
+            elif path == "/api/screen/record/start":
+                quality = {
+                    "maxFps": [str(payload.get("maxFps", 60))],
+                    "maxSize": [str(payload.get("maxSize", 1920))],
+                    "bitRate": [str(payload.get("bitRate", 12000000))],
+                }
+                max_fps, max_size, bit_rate = self._screen_quality(quality)
+                status = self.screen.start_recording(
+                    str(payload.get("serial", "")),
+                    max_fps,
+                    max_size,
+                    bit_rate,
+                )
+                self._send_json({"ok": True, "status": status})
+            elif path == "/api/screen/record/stop":
+                self._send_json({"ok": True, **self.screen.stop_recording()})
+            elif path == "/api/screen/refresh":
+                self._send_json({"ok": True, "status": self.screen.refresh_tools(self.manager.adb_path)})
             elif path == "/api/stop":
                 self._send_json({"ok": True, "status": self.manager.stop()})
             elif path == "/api/clear-device":
@@ -1796,8 +2413,15 @@ class DeviceLogHttpServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], manager: LogcatManager, profile: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        manager: LogcatManager,
+        screen: AndroidScreenManager,
+        profile: dict[str, Any],
+    ) -> None:
         self.manager = manager
+        self.screen = screen
         self.profile = profile
         super().__init__(address, DeviceLogRequestHandler)
 
@@ -1841,8 +2465,9 @@ def main() -> int:
     adb_path = find_adb(args.adb)
     xcrun_path = find_xcrun()
     manager = LogcatManager(adb_path, xcrun_path)
+    screen = AndroidScreenManager(adb_path)
     try:
-        server = DeviceLogHttpServer((args.host, port), manager, profile)
+        server = DeviceLogHttpServer((args.host, port), manager, screen, profile)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
             print(
@@ -1863,6 +2488,8 @@ def main() -> int:
     print(f"Profile: {profile['displayName']} ({profile['id']})")
     print(f"ADB: {adb_path or '未找到（页面会显示安装提示）'}")
     print(f"Xcode: {xcrun_path or '未找到（iOS 功能不可用）'}")
+    print(f"scrcpy: {screen.scrcpy_path or '未找到（流畅设备画面不可用）'}")
+    print(f"ffmpeg: {screen.ffmpeg_path or '未找到（流畅设备画面不可用）'}")
     print("按 Ctrl+C 停止服务。")
     if not args.no_open:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
@@ -1870,6 +2497,7 @@ def main() -> int:
     try:
         server.serve_forever(poll_interval=0.25)
     finally:
+        screen.close()
         manager.stop(publish=False)
         server.server_close()
     return 0

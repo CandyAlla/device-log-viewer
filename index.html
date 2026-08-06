@@ -86,14 +86,14 @@
       height: 100dvh;
     }
 
-    .topbar, .apk-installer, .ios-link-installer, .toolbar, .levels, .log-shell, .statusbar { min-width: 0; }
+    .topbar, .apk-installer, .ios-link-installer, .toolbar, .levels, .workspace, .log-shell, .statusbar { min-width: 0; }
     .topbar { grid-area: topbar; }
     .notice { grid-area: notice; }
     .apk-installer { grid-area: installer; }
     .ios-link-installer { grid-area: installer; }
     .toolbar { grid-area: toolbar; }
     .levels { grid-area: levels; }
-    .log-shell { grid-area: log; }
+    .workspace { grid-area: log; }
     .statusbar { grid-area: status; }
 
     .topbar {
@@ -293,7 +293,100 @@
     .ios-install-status.success, .apk-link-status.success { color: var(--accent); }
     .ios-install-status.error, .apk-link-status.error { color: var(--danger); }
 
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      min-height: 0;
+      background: #090c10;
+    }
+
+    .workspace.with-screen { grid-template-columns: minmax(0, 1fr) minmax(340px, min(38vw, 560px)); }
     .log-shell { min-height: 0; position: relative; background: #090c10; }
+
+    .screen-panel {
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+      min-width: 0;
+      min-height: 0;
+      border-left: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .screen-panel[hidden] { display: none; }
+    .screen-header, .screen-device-row, .screen-actions, .screen-footer {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .screen-header {
+      gap: 9px;
+      min-height: 46px;
+      padding: 7px 10px 7px 13px;
+      border-bottom: 1px solid var(--border);
+    }
+    .screen-header h2 { margin: 0; font-size: 14px; }
+    .screen-header .spacer { flex: 1; }
+    .screen-live-state { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .screen-live-state.live { color: var(--accent); }
+    .screen-live-state.error { color: var(--danger); }
+
+    .screen-device-row {
+      gap: 9px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      background: #10151c;
+    }
+    .screen-device-name { flex: 1; min-width: 0; overflow: hidden; color: #dbe3ed; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .screen-quality { width: 190px; padding: 0 30px 0 9px; font-size: 12px; }
+
+    .screen-stage {
+      position: relative;
+      display: grid;
+      min-height: 220px;
+      overflow: hidden;
+      place-items: center;
+      background: #030405;
+    }
+    .screen-stage video, .screen-stage img {
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      object-fit: contain;
+      background: #030405;
+    }
+    .screen-stage video[hidden], .screen-stage img[hidden], .screen-placeholder[hidden] { display: none; }
+    .screen-placeholder {
+      display: grid;
+      place-content: center;
+      gap: 5px;
+      max-width: 32ch;
+      padding: 24px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .screen-placeholder strong { color: #dbe3ed; font-size: 14px; }
+    .screen-recording-badge {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      padding: 4px 7px;
+      border: 1px solid #71343b;
+      border-radius: 5px;
+      background: #2d171b;
+      color: #ff9aa3;
+      font: 700 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .screen-recording-badge[hidden] { display: none; }
+
+    .screen-actions { flex-wrap: wrap; gap: 7px; padding: 9px 12px; border-top: 1px solid var(--border); }
+    .screen-actions button { flex: 1 1 auto; }
+    .screen-actions .recording { border-color: #9a3f49; background: #56242b; color: #ffd5d9; }
+    .screen-footer { gap: 8px; min-height: 34px; padding: 6px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+    .screen-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .screen-message.success { color: var(--accent); }
+    .screen-message.error { color: var(--danger); }
 
     .log-view {
       height: 100%;
@@ -423,7 +516,19 @@
     .stream-state.connected { color: var(--accent); }
     .stream-state.disconnected { color: var(--danger); }
 
-    @media (max-width: 780px) {
+    @media (max-width: 900px) {
+      .workspace.with-screen { grid-template-columns: minmax(0, 1fr); }
+      .workspace.with-screen .screen-panel {
+        position: fixed;
+        z-index: 100;
+        inset: 0;
+        border: 0;
+      }
+      .workspace.with-screen .log-shell { grid-row: auto; }
+      .screen-stage { min-height: 0; }
+    }
+
+    @media (max-width: 900px) {
       .app { grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto; }
       .topbar { align-items: stretch; flex-direction: column; gap: 9px; padding: 10px 12px; }
       .device-controls { width: 100%; margin: 0; flex-wrap: wrap; }
@@ -449,6 +554,8 @@
       .analytics-panel { padding: 8px 9px 9px; }
       .analytics-card > .line-no { padding-top: 8px; }
       .analytics-time { width: 100%; margin-left: 0; }
+      .screen-device-row { align-items: stretch; flex-direction: column; gap: 6px; }
+      .screen-quality { width: 100%; }
       .statusbar { padding: 6px 12px; gap: 8px; }
       .status-message { display: none; }
     }
@@ -546,6 +653,7 @@
       <button id="clearViewButton" type="button">清空页面</button>
       <button id="clearDeviceButton" class="danger" type="button" disabled>清设备日志</button>
       <button id="downloadButton" type="button" disabled title="下载当前筛选结果">下载 TXT</button>
+      <button id="screenPanelButton" type="button" disabled aria-expanded="false" aria-controls="screenPanel">设备画面</button>
       <a class="button-link" href="device-log-viewer://open-folder" title="无需日志服务，直接在 Finder 中打开工具所在文件夹">打开所在文件夹</a>
     </section>
 
@@ -560,15 +668,51 @@
       <span class="level-hint">最多保留最近 20,000 行</span>
     </nav>
 
-    <section class="log-shell" aria-label="实时日志">
-      <div id="logView" class="log-view" tabindex="0" aria-live="off">
-        <div id="emptyState" class="empty-state">
-          <strong>选择日志来源和设备，然后点“开始”</strong>
-          <span>日志会实时显示在这里，可随时筛选或下载。</span>
+    <section id="workspace" class="workspace">
+      <section class="log-shell" aria-label="实时日志">
+        <div id="logView" class="log-view" tabindex="0" aria-live="off">
+          <div id="emptyState" class="empty-state">
+            <strong>选择日志来源和设备，然后点“开始”</strong>
+            <span>日志会实时显示在这里，可随时筛选或下载。</span>
+          </div>
+          <div id="logLines"></div>
         </div>
-        <div id="logLines"></div>
-      </div>
-      <div id="pausedBadge" class="paused-badge" hidden>显示已暂停，日志仍在后台接收</div>
+        <div id="pausedBadge" class="paused-badge" hidden>显示已暂停，日志仍在后台接收</div>
+      </section>
+
+      <aside id="screenPanel" class="screen-panel" aria-label="Android 设备画面" hidden>
+        <header class="screen-header">
+          <h2>Android 设备画面</h2>
+          <span class="spacer"></span>
+          <span id="screenLiveState" class="screen-live-state">未连接</span>
+          <button id="closeScreenPanelButton" type="button" aria-label="关闭设备画面">关闭</button>
+        </header>
+        <div class="screen-device-row">
+          <span id="screenDeviceName" class="screen-device-name">尚未选择设备</span>
+          <select id="screenQuality" class="screen-quality" aria-label="设备画面质量">
+            <option value="60,1920,12000000">流畅 · 60 FPS · 12 Mbps</option>
+            <option value="30,1600,8000000">均衡 · 30 FPS · 8 Mbps</option>
+            <option value="30,1280,5000000">省流 · 30 FPS · 5 Mbps</option>
+          </select>
+        </div>
+        <div class="screen-stage">
+          <video id="screenVideo" autoplay muted playsinline hidden></video>
+          <img id="screenSnapshot" alt="Android 设备截图" hidden>
+          <div id="screenPlaceholder" class="screen-placeholder">
+            <strong>打开实时画面</strong>
+            <span>使用 scrcpy H.264 串流；截图和录屏文件只保存在本机。</span>
+          </div>
+          <span id="screenRecordingBadge" class="screen-recording-badge" hidden>REC 00:00</span>
+        </div>
+        <div class="screen-actions" aria-label="设备画面操作">
+          <button id="screenLiveButton" class="primary" type="button">开始实时画面</button>
+          <button id="screenScreenshotButton" type="button">截图 PNG</button>
+          <button id="screenRecordButton" type="button">开始录屏</button>
+        </div>
+        <footer class="screen-footer">
+          <span id="screenMessage" class="screen-message">等待连接 Android 设备</span>
+        </footer>
+      </aside>
     </section>
 
     <footer class="statusbar">
@@ -639,6 +783,21 @@
         clearViewButton: document.querySelector("#clearViewButton"),
         clearDeviceButton: document.querySelector("#clearDeviceButton"),
         downloadButton: document.querySelector("#downloadButton"),
+        screenPanelButton: document.querySelector("#screenPanelButton"),
+        workspace: document.querySelector("#workspace"),
+        screenPanel: document.querySelector("#screenPanel"),
+        closeScreenPanelButton: document.querySelector("#closeScreenPanelButton"),
+        screenLiveState: document.querySelector("#screenLiveState"),
+        screenDeviceName: document.querySelector("#screenDeviceName"),
+        screenQuality: document.querySelector("#screenQuality"),
+        screenVideo: document.querySelector("#screenVideo"),
+        screenSnapshot: document.querySelector("#screenSnapshot"),
+        screenPlaceholder: document.querySelector("#screenPlaceholder"),
+        screenRecordingBadge: document.querySelector("#screenRecordingBadge"),
+        screenLiveButton: document.querySelector("#screenLiveButton"),
+        screenScreenshotButton: document.querySelector("#screenScreenshotButton"),
+        screenRecordButton: document.querySelector("#screenRecordButton"),
+        screenMessage: document.querySelector("#screenMessage"),
         logView: document.querySelector("#logView"),
         logLines: document.querySelector("#logLines"),
         emptyState: document.querySelector("#emptyState"),
@@ -671,6 +830,30 @@
       let apkInstalling = false;
       let apkLinkInstalling = false;
       let iosInstalling = false;
+      let screenToolStatus = {
+        adbAvailable: false,
+        scrcpyAvailable: false,
+        ffmpegAvailable: false,
+        liveAvailable: false,
+        recordingAvailable: false,
+        recording: false,
+        recordingSerial: "",
+        recordingStartedAt: 0,
+        lastError: ""
+      };
+      let screenSocket = null;
+      let screenMediaSource = null;
+      let screenSourceBuffer = null;
+      let screenMediaUrl = "";
+      let screenSnapshotUrl = "";
+      let screenQueue = [];
+      let screenQueuedBytes = 0;
+      let screenSessionId = 0;
+      let screenConnecting = false;
+      let screenStreaming = false;
+      let screenRecording = false;
+      let screenRecordingStartedAt = 0;
+      let screenTimer = 0;
 
       const api = async (path, options = {}) => {
         const response = await fetch(path, {
@@ -730,6 +913,350 @@
       const formatFileSize = (bytes) => {
         if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
         return `${(bytes / (1024 * 1024)).toFixed(bytes < 100 * 1024 * 1024 ? 1 : 0)} MB`;
+      };
+
+      const selectedScreenQuality = () => {
+        const [maxFps, maxSize, bitRate] = elements.screenQuality.value.split(",").map(Number);
+        return { maxFps, maxSize, bitRate };
+      };
+
+      const formatElapsed = (startedAt) => {
+        if (!startedAt) return "00:00";
+        const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        const hours = Math.floor(elapsed / 3600);
+        const minutes = Math.floor((elapsed % 3600) / 60);
+        const seconds = elapsed % 60;
+        return [hours ? String(hours).padStart(2, "0") : null, String(minutes).padStart(2, "0"), String(seconds).padStart(2, "0")]
+          .filter(Boolean)
+          .join(":");
+      };
+
+      const setScreenMessage = (message, type = "") => {
+        elements.screenMessage.textContent = message;
+        elements.screenMessage.title = message;
+        elements.screenMessage.className = `screen-message${type ? ` ${type}` : ""}`;
+      };
+
+      const renderScreenControls = () => {
+        const source = elements.sourceSelect.value;
+        const serial = elements.deviceSelect.value;
+        const operationBusy = apkInstalling || apkLinkInstalling || iosInstalling;
+        const deviceLabel = elements.deviceSelect.selectedOptions[0]?.textContent || screenToolStatus.recordingSerial || "尚未选择设备";
+        elements.screenDeviceName.textContent = deviceLabel;
+        elements.screenDeviceName.title = deviceLabel;
+        elements.screenPanelButton.textContent = screenRecording ? "设备画面 · 录制中" : "设备画面";
+        elements.screenPanelButton.setAttribute("aria-expanded", String(!elements.screenPanel.hidden));
+
+        elements.screenLiveButton.textContent = screenConnecting
+          ? "正在连接…"
+          : screenStreaming
+            ? "停止实时画面"
+            : "开始实时画面";
+        elements.screenLiveButton.disabled = !serial || source !== "android" || operationBusy || (!screenStreaming && !screenConnecting && !screenToolStatus.liveAvailable);
+        elements.screenScreenshotButton.disabled = !serial || source !== "android" || operationBusy || !screenToolStatus.adbAvailable;
+        elements.screenRecordButton.disabled = screenRecording
+          ? false
+          : !serial || source !== "android" || operationBusy || !screenToolStatus.recordingAvailable;
+        elements.screenRecordButton.textContent = screenRecording ? "停止并下载录屏" : "开始录屏";
+        elements.screenRecordButton.className = screenRecording ? "recording" : "";
+        elements.screenQuality.disabled = screenConnecting || screenStreaming || screenRecording;
+
+        elements.screenRecordingBadge.hidden = !screenRecording;
+        if (screenRecording) elements.screenRecordingBadge.textContent = `REC ${formatElapsed(screenRecordingStartedAt)}`;
+        if (screenConnecting) {
+          elements.screenLiveState.textContent = "连接中";
+          elements.screenLiveState.className = "screen-live-state";
+        } else if (screenStreaming) {
+          elements.screenLiveState.textContent = "实时传输中";
+          elements.screenLiveState.className = "screen-live-state live";
+        } else if (screenToolStatus.lastError) {
+          elements.screenLiveState.textContent = "连接异常";
+          elements.screenLiveState.className = "screen-live-state error";
+        } else {
+          elements.screenLiveState.textContent = "未连接";
+          elements.screenLiveState.className = "screen-live-state";
+        }
+
+        const hasStillImage = Boolean(screenSnapshotUrl);
+        elements.screenVideo.hidden = !screenStreaming;
+        elements.screenSnapshot.hidden = screenStreaming || !hasStillImage;
+        elements.screenPlaceholder.hidden = screenStreaming || hasStillImage;
+        if (!screenToolStatus.adbAvailable) {
+          elements.screenPlaceholder.querySelector("strong").textContent = "未找到 adb";
+          elements.screenPlaceholder.querySelector("span").textContent = "请先安装 Android Platform Tools，然后重新检测工具。";
+        } else if (!screenToolStatus.scrcpyAvailable) {
+          elements.screenPlaceholder.querySelector("strong").textContent = "未找到 scrcpy";
+          elements.screenPlaceholder.querySelector("span").textContent = "执行 brew install scrcpy 后重新检测，即可使用流畅画面与录屏。";
+        } else if (!screenToolStatus.ffmpegAvailable) {
+          elements.screenPlaceholder.querySelector("strong").textContent = "未找到 ffmpeg";
+          elements.screenPlaceholder.querySelector("span").textContent = "执行 brew install ffmpeg 后重新检测，即可在网页播放实时画面。";
+        } else {
+          elements.screenPlaceholder.querySelector("strong").textContent = "打开实时画面";
+          elements.screenPlaceholder.querySelector("span").textContent = "使用 scrcpy H.264 串流；截图和录屏文件只保存在本机。";
+        }
+      };
+
+      const updateScreenToolStatus = (status = {}) => {
+        screenToolStatus = { ...screenToolStatus, ...status };
+        screenRecording = Boolean(screenToolStatus.recording);
+        screenRecordingStartedAt = Number(screenToolStatus.recordingStartedAt || 0);
+        window.clearInterval(screenTimer);
+        screenTimer = screenRecording ? window.setInterval(renderScreenControls, 500) : 0;
+        if (screenToolStatus.lastError && !screenStreaming && !screenConnecting) {
+          setScreenMessage(screenToolStatus.lastError, "error");
+        }
+        renderScreenControls();
+        updateButtons();
+      };
+
+      const refreshScreenTools = async () => {
+        try {
+          const { status } = await api("/api/screen/refresh", { method: "POST", body: "{}" });
+          updateScreenToolStatus(status);
+          if (!status.liveAvailable) {
+            const missing = [!status.scrcpyAvailable ? "scrcpy" : "", !status.ffmpegAvailable ? "ffmpeg" : ""].filter(Boolean).join("、");
+            if (missing) setScreenMessage(`缺少 ${missing}；截图仍可使用，流畅画面需要安装依赖。`, "error");
+          } else {
+            setScreenMessage("scrcpy 与 ffmpeg 已就绪");
+          }
+          return status;
+        } catch (error) {
+          setScreenMessage(error.message, "error");
+          return null;
+        }
+      };
+
+      const closeScreenStream = (message = "实时画面已停止", type = "") => {
+        screenSessionId += 1;
+        if (screenSocket) {
+          screenSocket.onopen = null;
+          screenSocket.onmessage = null;
+          screenSocket.onerror = null;
+          screenSocket.onclose = null;
+          try { screenSocket.close(); } catch {}
+        }
+        screenSocket = null;
+        screenQueue = [];
+        screenQueuedBytes = 0;
+        screenConnecting = false;
+        screenStreaming = false;
+        screenSourceBuffer = null;
+        screenMediaSource = null;
+        elements.screenVideo.pause();
+        elements.screenVideo.removeAttribute("src");
+        elements.screenVideo.load();
+        if (screenMediaUrl) URL.revokeObjectURL(screenMediaUrl);
+        screenMediaUrl = "";
+        if (message) setScreenMessage(message, type);
+        renderScreenControls();
+        updateButtons();
+      };
+
+      const syncScreenLiveEdge = () => {
+        const video = elements.screenVideo;
+        if (!video.buffered.length) return;
+        const liveEdge = video.buffered.end(video.buffered.length - 1);
+        if (!Number.isFinite(video.currentTime) || liveEdge - video.currentTime > 0.8) {
+          video.currentTime = Math.max(0, liveEdge - 0.15);
+        }
+        if (video.paused) video.play().catch(() => {});
+      };
+
+      const pumpScreenQueue = (sessionId) => {
+        if (sessionId !== screenSessionId || !screenSourceBuffer || screenSourceBuffer.updating) return;
+        if (screenQueue.length) {
+          const nextChunk = screenQueue.shift();
+          screenQueuedBytes -= nextChunk.byteLength;
+          try {
+            screenSourceBuffer.appendBuffer(nextChunk);
+          } catch (error) {
+            closeScreenStream(`浏览器无法解码实时画面：${error.message}`, "error");
+          }
+          return;
+        }
+        syncScreenLiveEdge();
+        if (!screenSourceBuffer.buffered.length) return;
+        const start = screenSourceBuffer.buffered.start(0);
+        const end = screenSourceBuffer.buffered.end(screenSourceBuffer.buffered.length - 1);
+        if (end - start > 20) {
+          try { screenSourceBuffer.remove(0, Math.max(0, end - 8)); } catch {}
+        }
+      };
+
+      const startScreenStream = async () => {
+        const serial = elements.deviceSelect.value;
+        if (!serial || elements.sourceSelect.value !== "android") return;
+        if (!window.MediaSource || !window.WebSocket) {
+          setScreenMessage("当前浏览器不支持 MediaSource/WebSocket，无法播放流畅画面。", "error");
+          return;
+        }
+        const codecTypes = ['video/mp4; codecs="avc1.640028"', 'video/mp4; codecs="avc1.42E01E"'];
+        const codecType = codecTypes.find(type => MediaSource.isTypeSupported(type));
+        if (!codecType) {
+          setScreenMessage("当前浏览器不支持 H.264 MediaSource 播放。", "error");
+          return;
+        }
+
+        closeScreenStream("");
+        const sessionId = screenSessionId;
+        screenConnecting = true;
+        renderScreenControls();
+        setScreenMessage("正在启动 scrcpy 并等待首帧…");
+        const mediaSource = new MediaSource();
+        screenMediaSource = mediaSource;
+        screenMediaUrl = URL.createObjectURL(mediaSource);
+        elements.screenVideo.src = screenMediaUrl;
+        elements.screenVideo.hidden = false;
+        elements.screenSnapshot.hidden = true;
+        elements.screenPlaceholder.hidden = true;
+
+        mediaSource.addEventListener("sourceopen", () => {
+          if (sessionId !== screenSessionId) return;
+          try {
+            screenSourceBuffer = mediaSource.addSourceBuffer(codecType);
+          } catch (error) {
+            closeScreenStream(`无法创建视频解码缓冲区：${error.message}`, "error");
+            return;
+          }
+          screenSourceBuffer.mode = "segments";
+          screenSourceBuffer.addEventListener("updateend", () => pumpScreenQueue(sessionId));
+          screenSourceBuffer.addEventListener("error", () => closeScreenStream("H.264 视频缓冲区发生错误。", "error"));
+
+          const quality = selectedScreenQuality();
+          const query = new URLSearchParams({ serial, ...Object.fromEntries(Object.entries(quality).map(([key, value]) => [key, String(value)])) });
+          const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+          const socket = new WebSocket(`${protocol}//${location.host}/api/screen/stream?${query}`);
+          screenSocket = socket;
+          socket.binaryType = "arraybuffer";
+          socket.onopen = () => {
+            if (sessionId !== screenSessionId) return;
+            screenConnecting = false;
+            screenStreaming = true;
+            setScreenMessage(`实时画面已连接 · ${quality.maxFps} FPS 上限`, "success");
+            renderScreenControls();
+            updateButtons();
+          };
+          socket.onmessage = event => {
+            if (sessionId !== screenSessionId || !(event.data instanceof ArrayBuffer)) return;
+            screenQueue.push(event.data);
+            screenQueuedBytes += event.data.byteLength;
+            if (screenQueuedBytes > 32 * 1024 * 1024) {
+              closeScreenStream("浏览器处理速度跟不上视频流，请改用“均衡”画质。", "error");
+              return;
+            }
+            pumpScreenQueue(sessionId);
+          };
+          socket.onerror = () => {
+            if (sessionId === screenSessionId) closeScreenStream("实时画面连接失败，请确认手机已解锁并重新尝试。", "error");
+          };
+          socket.onclose = () => {
+            if (sessionId === screenSessionId) closeScreenStream("实时画面连接已结束。", "error");
+          };
+        }, { once: true });
+      };
+
+      const toggleScreenStream = () => {
+        if (screenStreaming || screenConnecting) closeScreenStream();
+        else startScreenStream();
+      };
+
+      const captureScreenPng = async () => {
+        const serial = elements.deviceSelect.value;
+        if (!serial) return;
+        elements.screenScreenshotButton.disabled = true;
+        setScreenMessage("正在截取手机画面…");
+        try {
+          const response = await fetch(`/api/screen/screenshot?serial=${encodeURIComponent(serial)}&t=${Date.now()}`);
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.error || `截图失败（${response.status}）`);
+          }
+          const blob = await response.blob();
+          if (screenSnapshotUrl) URL.revokeObjectURL(screenSnapshotUrl);
+          screenSnapshotUrl = URL.createObjectURL(blob);
+          elements.screenSnapshot.src = screenSnapshotUrl;
+          const disposition = response.headers.get("Content-Disposition") || "";
+          const filename = disposition.match(/filename="([^"]+)"/)?.[1] || `android-screen-${Date.now()}.png`;
+          const link = document.createElement("a");
+          link.href = screenSnapshotUrl;
+          link.download = filename;
+          document.body.append(link);
+          link.click();
+          link.remove();
+          setScreenMessage(`截图已下载：${filename}`, "success");
+          renderScreenControls();
+        } catch (error) {
+          setScreenMessage(error.message, "error");
+          showNotice(error.message, true);
+        } finally {
+          renderScreenControls();
+        }
+      };
+
+      const toggleScreenRecording = async () => {
+        if (screenRecording) {
+          elements.screenRecordButton.disabled = true;
+          setScreenMessage("正在结束录屏并封装 MP4…");
+          try {
+            const result = await api("/api/screen/record/stop", { method: "POST", body: "{}" });
+            updateScreenToolStatus(result.status);
+            const link = document.createElement("a");
+            link.href = result.downloadUrl;
+            link.download = result.filename || "android-screen.mp4";
+            document.body.append(link);
+            link.click();
+            link.remove();
+            setScreenMessage(`${result.message} · ${formatFileSize(result.fileSize)} · ${result.durationSeconds}s`, "success");
+          } catch (error) {
+            setScreenMessage(error.message, "error");
+            showNotice(error.message);
+            await refreshScreenTools();
+          } finally {
+            renderScreenControls();
+            updateButtons();
+          }
+          return;
+        }
+
+        const serial = elements.deviceSelect.value;
+        if (!serial) return;
+        elements.screenRecordButton.disabled = true;
+        setScreenMessage("正在启动原始质量 MP4 录屏…");
+        try {
+          const quality = selectedScreenQuality();
+          const { status } = await api("/api/screen/record/start", {
+            method: "POST",
+            body: JSON.stringify({ serial, ...quality })
+          });
+          updateScreenToolStatus(status);
+          setScreenMessage("正在录屏；可同时查看实时画面。", "success");
+        } catch (error) {
+          setScreenMessage(error.message, "error");
+          showNotice(error.message, true);
+        } finally {
+          renderScreenControls();
+          updateButtons();
+        }
+      };
+
+      const openScreenPanel = async () => {
+        if (elements.sourceSelect.value !== "android" || !elements.deviceSelect.value) return;
+        elements.screenPanel.hidden = false;
+        elements.workspace.classList.add("with-screen");
+        renderScreenControls();
+        await refreshScreenTools();
+      };
+
+      const closeScreenPanel = () => {
+        closeScreenStream("", "");
+        elements.screenPanel.hidden = true;
+        elements.workspace.classList.remove("with-screen");
+        renderScreenControls();
+      };
+
+      const toggleScreenPanel = () => {
+        if (elements.screenPanel.hidden) openScreenPanel();
+        else closeScreenPanel();
       };
 
       const validateHttpInstallLink = (link, platformName) => {
@@ -1046,6 +1573,7 @@
           renderApkSelection();
           renderAndroidLinkInstaller();
           renderIosInstaller();
+          renderScreenControls();
           updateButtons();
         }
       };
@@ -1056,11 +1584,12 @@
         elements.reconnectAdbButton.disabled = true;
         elements.reconnectAdbButton.textContent = "正在检测…";
         try {
-          const { status } = await api("/api/reconnect-tools", {
+          const { status, screenStatus } = await api("/api/reconnect-tools", {
             method: "POST",
             body: JSON.stringify({ source })
           });
           updateCaptureStatus(status);
+          if (screenStatus) updateScreenToolStatus(screenStatus);
           await refreshDevices();
           hideNotice();
           elements.statusMessage.textContent = `${sourceName(source)}工具已重新检测`;
@@ -1074,6 +1603,7 @@
 
       const updateSourceUi = () => {
         const source = elements.sourceSelect.value;
+        if (source !== "android" && !elements.screenPanel.hidden) closeScreenPanel();
         const isIosDevice = source === "ios-device";
         if (isIosDevice) elements.appOnly.checked = true;
         elements.appOnlyText.textContent = isIosDevice ? "仅指定 App（真机必选）" : "仅指定 App";
@@ -1088,6 +1618,7 @@
         renderApkSelection();
         renderAndroidLinkInstaller();
         renderIosInstaller();
+        renderScreenControls();
       };
 
       const updateCaptureStatus = (status) => {
@@ -1111,6 +1642,8 @@
         const hasDevice = Boolean(elements.deviceSelect.value);
         const running = captureState === "running";
         const busy = running || apkInstalling || apkLinkInstalling || iosInstalling;
+        const screenLocksDevice = screenConnecting || screenStreaming || screenRecording;
+        const installBusy = busy || screenRecording;
         const requiresApp = source === "ios-device";
         if (requiresApp) elements.appOnly.checked = true;
         const needsApp = elements.appOnly.checked || requiresApp;
@@ -1118,9 +1651,9 @@
         const hasApp = Boolean(selectedAppId());
         elements.startButton.disabled = !hasDevice || busy || (needsApp && !hasApp);
         elements.stopButton.disabled = !running;
-        elements.sourceSelect.disabled = busy;
-        elements.deviceSelect.disabled = busy;
-        elements.refreshButton.disabled = busy;
+        elements.sourceSelect.disabled = busy || screenLocksDevice;
+        elements.deviceSelect.disabled = busy || screenLocksDevice;
+        elements.refreshButton.disabled = busy || screenLocksDevice;
         elements.clearDeviceButton.disabled = !hasDevice || source !== "android" || busy;
         elements.downloadButton.disabled = logs.length === 0;
         elements.appOnly.disabled = busy || requiresApp;
@@ -1128,13 +1661,14 @@
         elements.packageInput.hidden = !needsApp || !manualApp;
         elements.packageInput.disabled = busy || !needsApp || !manualApp;
         elements.refreshAppsButton.disabled = busy || !needsApp || !hasDevice;
-        elements.installApkButton.disabled = source !== "android" || !hasDevice || !selectedApkFile || busy;
+        elements.installApkButton.disabled = source !== "android" || !hasDevice || !selectedApkFile || installBusy;
         elements.clearApkButton.disabled = apkInstalling || apkLinkInstalling;
         elements.apkDropZone.setAttribute("aria-disabled", apkInstalling || apkLinkInstalling ? "true" : "false");
-        elements.androidInstallUrl.disabled = busy;
-        elements.installAndroidLinkButton.disabled = source !== "android" || !hasDevice || !elements.androidInstallUrl.value.trim() || busy;
-        elements.iosInstallUrl.disabled = busy;
-        elements.installIosButton.disabled = source !== "ios-device" || !hasDevice || !elements.iosInstallUrl.value.trim() || busy;
+        elements.androidInstallUrl.disabled = installBusy;
+        elements.installAndroidLinkButton.disabled = source !== "android" || !hasDevice || !elements.androidInstallUrl.value.trim() || installBusy;
+        elements.iosInstallUrl.disabled = installBusy;
+        elements.installIosButton.disabled = source !== "ios-device" || !hasDevice || !elements.iosInstallUrl.value.trim() || installBusy;
+        elements.screenPanelButton.disabled = source !== "android" || (!hasDevice && !screenRecording);
       };
 
       const parseLevel = (line) => {
@@ -1504,6 +2038,7 @@
       };
 
       elements.sourceSelect.addEventListener("change", () => {
+        closeScreenStream("", "");
         appRequestId += 1;
         elements.deviceSelect.replaceChildren(new Option("正在查找设备…", ""));
         resetAppOptions();
@@ -1513,6 +2048,7 @@
       });
       elements.refreshButton.addEventListener("click", refreshDevices);
       elements.deviceSelect.addEventListener("change", () => {
+        closeScreenStream("", "");
         renderApkSelection();
         renderAndroidLinkInstaller();
         renderIosInstaller();
@@ -1583,6 +2119,12 @@
       elements.clearViewButton.addEventListener("click", clearView);
       elements.clearDeviceButton.addEventListener("click", clearDeviceLogs);
       elements.downloadButton.addEventListener("click", downloadLogs);
+      elements.screenPanelButton.addEventListener("click", toggleScreenPanel);
+      elements.closeScreenPanelButton.addEventListener("click", closeScreenPanel);
+      elements.screenLiveButton.addEventListener("click", toggleScreenStream);
+      elements.screenScreenshotButton.addEventListener("click", captureScreenPng);
+      elements.screenRecordButton.addEventListener("click", toggleScreenRecording);
+      elements.screenQuality.addEventListener("change", () => setScreenMessage("画质设置将在下一次串流或录屏时生效。"));
       elements.reconnectAdbButton.addEventListener("click", reconnectTools);
       elements.dismissNotice.addEventListener("click", hideNotice);
       elements.autoScroll.addEventListener("change", () => {
@@ -1610,6 +2152,9 @@
           elements.searchInput.select();
         }
       });
+      window.addEventListener("beforeunload", () => {
+        if (screenSocket) screenSocket.close();
+      });
 
       const applyRuntimeConfig = (config) => {
         runtimeConfig = config;
@@ -1636,7 +2181,12 @@
         connectStream();
         updateSourceUi();
         refreshDevices();
-        api("/api/status").then(({ status }) => updateCaptureStatus(status)).catch(error => showNotice(error.message));
+        api("/api/status")
+          .then(({ status, screenStatus }) => {
+            updateCaptureStatus(status);
+            if (screenStatus) updateScreenToolStatus(screenStatus);
+          })
+          .catch(error => showNotice(error.message));
       };
 
       initialize();
