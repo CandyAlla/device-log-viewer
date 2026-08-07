@@ -57,7 +57,7 @@ ANDROID_THREADTIME_LINE = re.compile(
     r"^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+(\d+)\s+\d+\s+[VDIWEF]\s+"
 )
 TOOL_ID = "device-log-viewer"
-TOOL_VERSION = "1.3.0"
+TOOL_VERSION = "1.3.1"
 PROFILE_SCHEMA_VERSION = 1
 ANALYTICS_PARSERS = {"plain", "gamefoundation-eventlog"}
 SCREEN_MAX_RECORDING_BYTES = 4 * 1024 * 1024 * 1024
@@ -2010,6 +2010,7 @@ class DeviceScreenManager:
         ffmpeg_log: list[str] = []
         scrcpy_command = [
             *self._scrcpy_base_command(serial, max_fps, max_size, bit_rate),
+            "--verbosity=warn",
             "--record=/dev/stdout",
             "--record-format=mkv",
         ]
@@ -2036,14 +2037,6 @@ class DeviceScreenManager:
             "-hide_banner",
             "-loglevel",
             "error",
-            "-fflags",
-            "nobuffer",
-            "-flags",
-            "low_delay",
-            "-probesize",
-            "512K",
-            "-analyzeduration",
-            "0",
             "-i",
             "pipe:0",
             "-map",

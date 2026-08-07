@@ -1177,7 +1177,11 @@
           setScreenMessage("当前浏览器不支持 MediaSource/WebSocket，无法播放流畅画面。", "error");
           return;
         }
-        const codecTypes = ['video/mp4; codecs="avc1.640028"', 'video/mp4; codecs="avc1.42E01E"'];
+        const codecTypes = [
+          'video/mp4; codecs="avc1.64002A"',
+          'video/mp4; codecs="avc1.640028"',
+          'video/mp4; codecs="avc1.42E01E"'
+        ];
         const codecType = codecTypes.find(type => MediaSource.isTypeSupported(type));
         if (!codecType) {
           setScreenMessage("当前浏览器不支持 H.264 MediaSource 播放。", "error");
