@@ -332,13 +332,15 @@
     .screen-live-state.error { color: var(--danger); }
 
     .screen-device-row {
+      flex-wrap: wrap;
       gap: 9px;
       padding: 8px 12px;
       border-bottom: 1px solid var(--border);
       background: #10151c;
     }
-    .screen-device-name { flex: 1; min-width: 0; overflow: hidden; color: #dbe3ed; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-    .screen-quality { width: 190px; padding: 0 30px 0 9px; font-size: 12px; }
+    .screen-device-name { flex: 1 1 100%; min-width: 0; overflow: hidden; color: #dbe3ed; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .screen-quality, .screen-capture-source { flex: 1 1 180px; width: auto; min-width: 0; padding: 0 30px 0 9px; font-size: 12px; }
+    .screen-capture-source[hidden] { display: none; }
 
     .screen-stage {
       position: relative;
@@ -554,8 +556,9 @@
       .analytics-panel { padding: 8px 9px 9px; }
       .analytics-card > .line-no { padding-top: 8px; }
       .analytics-time { width: 100%; margin-left: 0; }
-      .screen-device-row { align-items: stretch; flex-direction: column; gap: 6px; }
-      .screen-quality { width: 100%; }
+      .screen-device-row { align-items: stretch; flex-flow: column nowrap; gap: 6px; }
+      .screen-device-name { flex: 0 1 auto; }
+      .screen-quality, .screen-capture-source { flex: 0 0 var(--control-height); width: 100%; }
       .statusbar { padding: 6px 12px; gap: 8px; }
       .status-message { display: none; }
     }
@@ -680,15 +683,18 @@
         <div id="pausedBadge" class="paused-badge" hidden>显示已暂停，日志仍在后台接收</div>
       </section>
 
-      <aside id="screenPanel" class="screen-panel" aria-label="Android 设备画面" hidden>
+      <aside id="screenPanel" class="screen-panel" aria-label="设备画面" hidden>
         <header class="screen-header">
-          <h2>Android 设备画面</h2>
+          <h2 id="screenTitle">设备画面</h2>
           <span class="spacer"></span>
           <span id="screenLiveState" class="screen-live-state">未连接</span>
           <button id="closeScreenPanelButton" type="button" aria-label="关闭设备画面">关闭</button>
         </header>
         <div class="screen-device-row">
           <span id="screenDeviceName" class="screen-device-name">尚未选择设备</span>
+          <select id="screenCaptureSource" class="screen-capture-source" aria-label="iPhone/iPad 画面来源" hidden>
+            <option value="">正在检测 iPhone/iPad 画面输入…</option>
+          </select>
           <select id="screenQuality" class="screen-quality" aria-label="设备画面质量">
             <option value="60,1920,12000000">流畅 · 60 FPS · 12 Mbps</option>
             <option value="30,1600,8000000">均衡 · 30 FPS · 8 Mbps</option>
@@ -700,7 +706,7 @@
           <img id="screenSnapshot" alt="Android 设备截图" hidden>
           <div id="screenPlaceholder" class="screen-placeholder">
             <strong>打开实时画面</strong>
-            <span>使用 scrcpy H.264 串流；截图和录屏文件只保存在本机。</span>
+            <span>画面、截图和录屏文件只在这台 Mac 上处理。</span>
           </div>
           <span id="screenRecordingBadge" class="screen-recording-badge" hidden>REC 00:00</span>
         </div>
@@ -787,8 +793,10 @@
         workspace: document.querySelector("#workspace"),
         screenPanel: document.querySelector("#screenPanel"),
         closeScreenPanelButton: document.querySelector("#closeScreenPanelButton"),
+        screenTitle: document.querySelector("#screenTitle"),
         screenLiveState: document.querySelector("#screenLiveState"),
         screenDeviceName: document.querySelector("#screenDeviceName"),
+        screenCaptureSource: document.querySelector("#screenCaptureSource"),
         screenQuality: document.querySelector("#screenQuality"),
         screenVideo: document.querySelector("#screenVideo"),
         screenSnapshot: document.querySelector("#screenSnapshot"),
@@ -832,12 +840,16 @@
       let iosInstalling = false;
       let screenToolStatus = {
         adbAvailable: false,
+        xcrunAvailable: false,
         scrcpyAvailable: false,
         ffmpegAvailable: false,
+        iosCaptureDevices: [],
+        iosCaptureAvailable: false,
         liveAvailable: false,
         recordingAvailable: false,
         recording: false,
         recordingSerial: "",
+        recordingSource: "",
         recordingStartedAt: 0,
         lastError: ""
       };
@@ -920,6 +932,14 @@
         return { maxFps, maxSize, bitRate };
       };
 
+      const selectedScreenCaptureIndex = () => {
+        return elements.sourceSelect.value === "ios-device" ? elements.screenCaptureSource.value : "";
+      };
+
+      const isScreenSource = (source = elements.sourceSelect.value) => {
+        return source === "android" || source === "ios-device";
+      };
+
       const formatElapsed = (startedAt) => {
         if (!startedAt) return "00:00";
         const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
@@ -937,13 +957,40 @@
         elements.screenMessage.className = `screen-message${type ? ` ${type}` : ""}`;
       };
 
+      const renderIosCaptureSources = () => {
+        const previous = elements.screenCaptureSource.value;
+        const devices = Array.isArray(screenToolStatus.iosCaptureDevices) ? screenToolStatus.iosCaptureDevices : [];
+        elements.screenCaptureSource.replaceChildren();
+        if (!devices.length) {
+          elements.screenCaptureSource.add(new Option("未发现 iPhone/iPad 画面输入", ""));
+          return;
+        }
+        for (const device of devices) {
+          const label = device.selectedMatch ? `${device.name}（当前设备）` : device.name;
+          elements.screenCaptureSource.add(new Option(label, device.index));
+        }
+        const values = devices.map(device => String(device.index));
+        if (values.includes(previous)) {
+          elements.screenCaptureSource.value = previous;
+        } else {
+          const selected = devices.find(device => device.selectedMatch) || devices[0];
+          elements.screenCaptureSource.value = String(selected.index);
+        }
+      };
+
       const renderScreenControls = () => {
         const source = elements.sourceSelect.value;
+        const isIosDevice = source === "ios-device";
+        const supportedSource = isScreenSource(source);
         const serial = elements.deviceSelect.value;
         const operationBusy = apkInstalling || apkLinkInstalling || iosInstalling;
         const deviceLabel = elements.deviceSelect.selectedOptions[0]?.textContent || screenToolStatus.recordingSerial || "尚未选择设备";
+        const screenLabel = isIosDevice ? "iPhone / iPad 画面" : "Android 设备画面";
+        elements.screenTitle.textContent = screenLabel;
+        elements.screenPanel.setAttribute("aria-label", screenLabel);
         elements.screenDeviceName.textContent = deviceLabel;
         elements.screenDeviceName.title = deviceLabel;
+        elements.screenCaptureSource.hidden = !isIosDevice;
         elements.screenPanelButton.textContent = screenRecording ? "设备画面 · 录制中" : "设备画面";
         elements.screenPanelButton.setAttribute("aria-expanded", String(!elements.screenPanel.hidden));
 
@@ -952,14 +999,18 @@
           : screenStreaming
             ? "停止实时画面"
             : "开始实时画面";
-        elements.screenLiveButton.disabled = !serial || source !== "android" || operationBusy || (!screenStreaming && !screenConnecting && !screenToolStatus.liveAvailable);
-        elements.screenScreenshotButton.disabled = !serial || source !== "android" || operationBusy || !screenToolStatus.adbAvailable;
+        elements.screenLiveButton.disabled = !serial || !supportedSource || operationBusy || (!screenStreaming && !screenConnecting && !screenToolStatus.liveAvailable);
+        const screenshotAvailable = isIosDevice
+          ? screenToolStatus.ffmpegAvailable && screenToolStatus.iosCaptureAvailable && (!screenRecording || screenStreaming)
+          : screenToolStatus.adbAvailable;
+        elements.screenScreenshotButton.disabled = !serial || !supportedSource || operationBusy || !screenshotAvailable;
         elements.screenRecordButton.disabled = screenRecording
           ? false
-          : !serial || source !== "android" || operationBusy || !screenToolStatus.recordingAvailable;
+          : !serial || !supportedSource || operationBusy || !screenToolStatus.recordingAvailable;
         elements.screenRecordButton.textContent = screenRecording ? "停止并下载录屏" : "开始录屏";
         elements.screenRecordButton.className = screenRecording ? "recording" : "";
         elements.screenQuality.disabled = screenConnecting || screenStreaming || screenRecording;
+        elements.screenCaptureSource.disabled = screenConnecting || screenStreaming || screenRecording || !screenToolStatus.iosCaptureAvailable;
 
         elements.screenRecordingBadge.hidden = !screenRecording;
         if (screenRecording) elements.screenRecordingBadge.textContent = `REC ${formatElapsed(screenRecordingStartedAt)}`;
@@ -981,7 +1032,19 @@
         elements.screenVideo.hidden = !screenStreaming;
         elements.screenSnapshot.hidden = screenStreaming || !hasStillImage;
         elements.screenPlaceholder.hidden = screenStreaming || hasStillImage;
-        if (!screenToolStatus.adbAvailable) {
+        if (isIosDevice && !screenToolStatus.xcrunAvailable) {
+          elements.screenPlaceholder.querySelector("strong").textContent = "未找到 Xcode 工具";
+          elements.screenPlaceholder.querySelector("span").textContent = "请先安装并启动 Xcode，然后重新检测工具。";
+        } else if (isIosDevice && !screenToolStatus.ffmpegAvailable) {
+          elements.screenPlaceholder.querySelector("strong").textContent = "未找到 ffmpeg";
+          elements.screenPlaceholder.querySelector("span").textContent = "执行 brew install ffmpeg 后重新检测，即可捕获 iPhone/iPad 画面。";
+        } else if (isIosDevice && !screenToolStatus.iosCaptureAvailable) {
+          elements.screenPlaceholder.querySelector("strong").textContent = "未发现 iPhone/iPad 画面输入";
+          elements.screenPlaceholder.querySelector("span").textContent = "请使用 USB 连接、解锁并信任这台 Mac，然后重新打开设备画面。";
+        } else if (isIosDevice) {
+          elements.screenPlaceholder.querySelector("strong").textContent = "打开 iPhone/iPad 实时画面";
+          elements.screenPlaceholder.querySelector("span").textContent = "使用 macOS AVFoundation 捕获；画面和文件只在本机处理。";
+        } else if (!screenToolStatus.adbAvailable) {
           elements.screenPlaceholder.querySelector("strong").textContent = "未找到 adb";
           elements.screenPlaceholder.querySelector("span").textContent = "请先安装 Android Platform Tools，然后重新检测工具。";
         } else if (!screenToolStatus.scrcpyAvailable) {
@@ -998,6 +1061,7 @@
 
       const updateScreenToolStatus = (status = {}) => {
         screenToolStatus = { ...screenToolStatus, ...status };
+        renderIosCaptureSources();
         screenRecording = Boolean(screenToolStatus.recording);
         screenRecordingStartedAt = Number(screenToolStatus.recordingStartedAt || 0);
         window.clearInterval(screenTimer);
@@ -1010,10 +1074,19 @@
       };
 
       const refreshScreenTools = async () => {
+        const source = elements.sourceSelect.value;
+        const serial = elements.deviceSelect.value;
         try {
-          const { status } = await api("/api/screen/refresh", { method: "POST", body: "{}" });
+          const { status } = await api("/api/screen/refresh", {
+            method: "POST",
+            body: JSON.stringify({ source, serial })
+          });
           updateScreenToolStatus(status);
-          if (!status.liveAvailable) {
+          if (source === "ios-device" && !status.iosCaptureAvailable) {
+            setScreenMessage("未发现 iPhone/iPad 画面输入；请确认 USB 连接、解锁和信任状态。", "error");
+          } else if (source === "ios-device" && status.liveAvailable) {
+            setScreenMessage("iPhone/iPad 画面输入与 ffmpeg 已就绪", "success");
+          } else if (!status.liveAvailable) {
             const missing = [!status.scrcpyAvailable ? "scrcpy" : "", !status.ffmpegAvailable ? "ffmpeg" : ""].filter(Boolean).join("、");
             if (missing) setScreenMessage(`缺少 ${missing}；截图仍可使用，流畅画面需要安装依赖。`, "error");
           } else {
@@ -1084,8 +1157,9 @@
       };
 
       const startScreenStream = async () => {
+        const source = elements.sourceSelect.value;
         const serial = elements.deviceSelect.value;
-        if (!serial || elements.sourceSelect.value !== "android") return;
+        if (!serial || !isScreenSource(source)) return;
         if (!window.MediaSource || !window.WebSocket) {
           setScreenMessage("当前浏览器不支持 MediaSource/WebSocket，无法播放流畅画面。", "error");
           return;
@@ -1101,7 +1175,7 @@
         const sessionId = screenSessionId;
         screenConnecting = true;
         renderScreenControls();
-        setScreenMessage("正在启动 scrcpy 并等待首帧…");
+        setScreenMessage(source === "ios-device" ? "正在连接 iPhone/iPad 画面并等待首帧…" : "正在启动 scrcpy 并等待首帧…");
         const mediaSource = new MediaSource();
         screenMediaSource = mediaSource;
         screenMediaUrl = URL.createObjectURL(mediaSource);
@@ -1123,7 +1197,12 @@
           screenSourceBuffer.addEventListener("error", () => closeScreenStream("H.264 视频缓冲区发生错误。", "error"));
 
           const quality = selectedScreenQuality();
-          const query = new URLSearchParams({ serial, ...Object.fromEntries(Object.entries(quality).map(([key, value]) => [key, String(value)])) });
+          const query = new URLSearchParams({
+            source,
+            serial,
+            captureIndex: selectedScreenCaptureIndex(),
+            ...Object.fromEntries(Object.entries(quality).map(([key, value]) => [key, String(value)]))
+          });
           const protocol = location.protocol === "https:" ? "wss:" : "ws:";
           const socket = new WebSocket(`${protocol}//${location.host}/api/screen/stream?${query}`);
           screenSocket = socket;
@@ -1160,31 +1239,66 @@
         else startScreenStream();
       };
 
+      const saveScreenSnapshot = (blob, filename) => {
+        if (screenSnapshotUrl) URL.revokeObjectURL(screenSnapshotUrl);
+        screenSnapshotUrl = URL.createObjectURL(blob);
+        elements.screenSnapshot.src = screenSnapshotUrl;
+        const link = document.createElement("a");
+        link.href = screenSnapshotUrl;
+        link.download = filename;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setScreenMessage(`截图已下载：${filename}`, "success");
+        renderScreenControls();
+      };
+
+      const captureCurrentVideoFrame = async serial => {
+        const video = elements.screenVideo;
+        if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+          throw new Error("实时画面尚未准备好，请稍后再截图。");
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("浏览器无法创建截图画布。");
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise((resolve, reject) => {
+          canvas.toBlob(value => value ? resolve(value) : reject(new Error("浏览器生成 PNG 失败。")), "image/png");
+        });
+        const safeSerial = serial.replace(/[^a-zA-Z0-9._-]+/g, "-") || "ios";
+        return { blob, filename: `ios-screen-${safeSerial}-${Date.now()}.png` };
+      };
+
       const captureScreenPng = async () => {
+        const source = elements.sourceSelect.value;
         const serial = elements.deviceSelect.value;
         if (!serial) return;
         elements.screenScreenshotButton.disabled = true;
         setScreenMessage("正在截取手机画面…");
         try {
-          const response = await fetch(`/api/screen/screenshot?serial=${encodeURIComponent(serial)}&t=${Date.now()}`);
+          if (source === "ios-device" && screenStreaming) {
+            const { blob, filename } = await captureCurrentVideoFrame(serial);
+            saveScreenSnapshot(blob, filename);
+            return;
+          }
+          const query = new URLSearchParams({
+            source,
+            serial,
+            captureIndex: selectedScreenCaptureIndex(),
+            t: String(Date.now())
+          });
+          const response = await fetch(`/api/screen/screenshot?${query}`);
           if (!response.ok) {
             const payload = await response.json().catch(() => ({}));
             throw new Error(payload.error || `截图失败（${response.status}）`);
           }
           const blob = await response.blob();
-          if (screenSnapshotUrl) URL.revokeObjectURL(screenSnapshotUrl);
-          screenSnapshotUrl = URL.createObjectURL(blob);
-          elements.screenSnapshot.src = screenSnapshotUrl;
           const disposition = response.headers.get("Content-Disposition") || "";
-          const filename = disposition.match(/filename="([^"]+)"/)?.[1] || `android-screen-${Date.now()}.png`;
-          const link = document.createElement("a");
-          link.href = screenSnapshotUrl;
-          link.download = filename;
-          document.body.append(link);
-          link.click();
-          link.remove();
-          setScreenMessage(`截图已下载：${filename}`, "success");
-          renderScreenControls();
+          const platformName = source === "ios-device" ? "ios" : "android";
+          const filename = disposition.match(/filename="([^"]+)"/)?.[1] || `${platformName}-screen-${Date.now()}.png`;
+          saveScreenSnapshot(blob, filename);
         } catch (error) {
           setScreenMessage(error.message, "error");
           showNotice(error.message, true);
@@ -1194,6 +1308,7 @@
       };
 
       const toggleScreenRecording = async () => {
+        const source = elements.sourceSelect.value;
         if (screenRecording) {
           elements.screenRecordButton.disabled = true;
           setScreenMessage("正在结束录屏并封装 MP4…");
@@ -1202,7 +1317,7 @@
             updateScreenToolStatus(result.status);
             const link = document.createElement("a");
             link.href = result.downloadUrl;
-            link.download = result.filename || "android-screen.mp4";
+            link.download = result.filename || `${source === "ios-device" ? "ios" : "android"}-screen.mp4`;
             document.body.append(link);
             link.click();
             link.remove();
@@ -1226,10 +1341,20 @@
           const quality = selectedScreenQuality();
           const { status } = await api("/api/screen/record/start", {
             method: "POST",
-            body: JSON.stringify({ serial, ...quality })
+            body: JSON.stringify({
+              source,
+              serial,
+              captureIndex: selectedScreenCaptureIndex(),
+              ...quality
+            })
           });
           updateScreenToolStatus(status);
-          setScreenMessage("正在录屏；可同时查看实时画面。", "success");
+          setScreenMessage(
+            source === "ios-device"
+              ? "正在录制 iPhone/iPad 画面；如果实时预览冲突，请先停止预览。"
+              : "正在录屏；可同时查看实时画面。",
+            "success"
+          );
         } catch (error) {
           setScreenMessage(error.message, "error");
           showNotice(error.message, true);
@@ -1240,7 +1365,7 @@
       };
 
       const openScreenPanel = async () => {
-        if (elements.sourceSelect.value !== "android" || !elements.deviceSelect.value) return;
+        if (!isScreenSource(elements.sourceSelect.value) || !elements.deviceSelect.value) return;
         elements.screenPanel.hidden = false;
         elements.workspace.classList.add("with-screen");
         renderScreenControls();
@@ -1586,7 +1711,7 @@
         try {
           const { status, screenStatus } = await api("/api/reconnect-tools", {
             method: "POST",
-            body: JSON.stringify({ source })
+            body: JSON.stringify({ source, serial: elements.deviceSelect.value })
           });
           updateCaptureStatus(status);
           if (screenStatus) updateScreenToolStatus(screenStatus);
@@ -1603,7 +1728,7 @@
 
       const updateSourceUi = () => {
         const source = elements.sourceSelect.value;
-        if (source !== "android" && !elements.screenPanel.hidden) closeScreenPanel();
+        if (!isScreenSource(source) && !elements.screenPanel.hidden) closeScreenPanel();
         const isIosDevice = source === "ios-device";
         if (isIosDevice) elements.appOnly.checked = true;
         elements.appOnlyText.textContent = isIosDevice ? "仅指定 App（真机必选）" : "仅指定 App";
@@ -1668,7 +1793,7 @@
         elements.installAndroidLinkButton.disabled = source !== "android" || !hasDevice || !elements.androidInstallUrl.value.trim() || installBusy;
         elements.iosInstallUrl.disabled = installBusy;
         elements.installIosButton.disabled = source !== "ios-device" || !hasDevice || !elements.iosInstallUrl.value.trim() || installBusy;
-        elements.screenPanelButton.disabled = source !== "android" || (!hasDevice && !screenRecording);
+        elements.screenPanelButton.disabled = !isScreenSource(source) || (!hasDevice && !screenRecording);
       };
 
       const parseLevel = (line) => {
@@ -2037,23 +2162,25 @@
         stream.addEventListener("status", event => updateCaptureStatus(JSON.parse(event.data)));
       };
 
-      elements.sourceSelect.addEventListener("change", () => {
+      elements.sourceSelect.addEventListener("change", async () => {
         closeScreenStream("", "");
         appRequestId += 1;
         elements.deviceSelect.replaceChildren(new Option("正在查找设备…", ""));
         resetAppOptions();
         updateSourceUi();
         updateButtons();
-        refreshDevices();
+        await refreshDevices();
+        if (!elements.screenPanel.hidden && isScreenSource()) await refreshScreenTools();
       });
       elements.refreshButton.addEventListener("click", refreshDevices);
-      elements.deviceSelect.addEventListener("change", () => {
+      elements.deviceSelect.addEventListener("change", async () => {
         closeScreenStream("", "");
         renderApkSelection();
         renderAndroidLinkInstaller();
         renderIosInstaller();
         updateButtons();
-        refreshApps();
+        await refreshApps();
+        if (!elements.screenPanel.hidden && isScreenSource()) await refreshScreenTools();
       });
       elements.apkDropZone.addEventListener("click", () => {
         if (!apkInstalling && !apkLinkInstalling) elements.apkFileInput.click();
@@ -2125,6 +2252,7 @@
       elements.screenScreenshotButton.addEventListener("click", captureScreenPng);
       elements.screenRecordButton.addEventListener("click", toggleScreenRecording);
       elements.screenQuality.addEventListener("change", () => setScreenMessage("画质设置将在下一次串流或录屏时生效。"));
+      elements.screenCaptureSource.addEventListener("change", () => setScreenMessage("iPhone/iPad 画面来源将在下一次串流、截图或录屏时生效。"));
       elements.reconnectAdbButton.addEventListener("click", reconnectTools);
       elements.dismissNotice.addEventListener("click", hideNotice);
       elements.autoScroll.addEventListener("change", () => {

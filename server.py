@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import webbrowser
 import zipfile
 from http import HTTPStatus
@@ -56,7 +57,7 @@ ANDROID_THREADTIME_LINE = re.compile(
     r"^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+(\d+)\s+\d+\s+[VDIWEF]\s+"
 )
 TOOL_ID = "device-log-viewer"
-TOOL_VERSION = "1.1.0"
+TOOL_VERSION = "1.2.0"
 PROFILE_SCHEMA_VERSION = 1
 ANALYTICS_PARSERS = {"plain", "gamefoundation-eventlog"}
 SCREEN_MAX_RECORDING_BYTES = 4 * 1024 * 1024 * 1024
@@ -1148,42 +1149,107 @@ def _drain_process_pipe(pipe: Any, output: list[str]) -> None:
             pass
 
 
-class AndroidScreenManager:
-    def __init__(self, adb_path: str | None) -> None:
+def list_avfoundation_video_devices(ffmpeg_path: str | None) -> list[dict[str, str]]:
+    if not ffmpeg_path:
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "未找到 ffmpeg，请先执行 brew install ffmpeg。")
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg_path,
+                "-hide_banner",
+                "-f",
+                "avfoundation",
+                "-list_devices",
+                "true",
+                "-i",
+                "",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, f"读取 iPhone/iPad 画面输入源失败：{exc}") from exc
+
+    output = "\n".join(value for value in (result.stderr, result.stdout) if value)
+    devices: list[dict[str, str]] = []
+    in_video_section = False
+    for raw_line in output.splitlines():
+        if "AVFoundation video devices:" in raw_line:
+            in_video_section = True
+            continue
+        if "AVFoundation audio devices:" in raw_line:
+            break
+        if not in_video_section:
+            continue
+        match = re.search(r"\[(\d+)\]\s+(.+?)\s*$", raw_line)
+        if match:
+            devices.append({"index": match.group(1), "name": match.group(2).strip()})
+    return devices
+
+
+def _normalized_device_name(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"[^0-9a-z\u3400-\u9fff]+", "", normalized)
+
+
+class DeviceScreenManager:
+    def __init__(self, adb_path: str | None, xcrun_path: str | None) -> None:
         self._lock = threading.RLock()
         self.adb_path = adb_path
+        self.xcrun_path = xcrun_path
         self.scrcpy_path = find_scrcpy()
         self.ffmpeg_path = find_ffmpeg()
+        self._ios_capture_devices: list[dict[str, Any]] = []
         self._streams: dict[str, dict[str, Any]] = {}
         self._recording_process: subprocess.Popen[Any] | None = None
         self._recording_path: Path | None = None
         self._recording_serial = ""
+        self._recording_source = ""
         self._recording_started_at = 0.0
         self._recording_log: list[str] = []
         self._downloads: dict[str, dict[str, Any]] = {}
         self._last_error = ""
 
-    def refresh_tools(self, adb_path: str | None = None) -> dict[str, Any]:
+    def refresh_tools(
+        self,
+        adb_path: str | None = None,
+        xcrun_path: str | None = None,
+        source: str = "android",
+        serial: str = "",
+    ) -> dict[str, Any]:
         with self._lock:
             if adb_path is not None:
                 self.adb_path = adb_path
             else:
                 self.adb_path = find_adb()
+            if xcrun_path is not None:
+                self.xcrun_path = xcrun_path
+            else:
+                self.xcrun_path = find_xcrun()
             self.scrcpy_path = find_scrcpy()
             self.ffmpeg_path = find_ffmpeg()
-        return self.status()
+        if source == "ios-device":
+            capture_devices = self._discover_ios_capture_devices(serial)
+            with self._lock:
+                self._ios_capture_devices = capture_devices
+        return self.status(source)
 
     def _reap_recording_locked(self) -> None:
         process = self._recording_process
         if not process or process.poll() is None:
             return
         detail = "；".join(self._recording_log[-4:])
-        self._last_error = detail or f"scrcpy 录屏意外结束（退出码 {process.returncode}）"
+        self._last_error = detail or f"设备画面录制意外结束（退出码 {process.returncode}）"
         if self._recording_path:
             self._recording_path.unlink(missing_ok=True)
         self._recording_process = None
         self._recording_path = None
         self._recording_serial = ""
+        self._recording_source = ""
         self._recording_started_at = 0.0
 
     def _cleanup_downloads_locked(self) -> None:
@@ -1196,25 +1262,113 @@ class AndroidScreenManager:
                 path.unlink(missing_ok=True)
             self._downloads.pop(token, None)
 
-    def status(self) -> dict[str, Any]:
+    def status(self, source: str = "android") -> dict[str, Any]:
         with self._lock:
             self._reap_recording_locked()
             self._cleanup_downloads_locked()
+            is_ios_device = source == "ios-device"
+            ios_capture_devices = [dict(device) for device in self._ios_capture_devices]
             return {
+                "source": source,
                 "adbAvailable": bool(self.adb_path),
+                "xcrunAvailable": bool(self.xcrun_path),
                 "scrcpyAvailable": bool(self.scrcpy_path),
                 "scrcpyPath": self.scrcpy_path or "",
                 "ffmpegAvailable": bool(self.ffmpeg_path),
                 "ffmpegPath": self.ffmpeg_path or "",
-                "liveAvailable": bool(self.adb_path and self.scrcpy_path and self.ffmpeg_path),
-                "recordingAvailable": bool(self.adb_path and self.scrcpy_path),
+                "iosCaptureDevices": ios_capture_devices,
+                "iosCaptureAvailable": bool(ios_capture_devices),
+                "liveAvailable": bool(self.ffmpeg_path and ios_capture_devices)
+                if is_ios_device
+                else bool(self.adb_path and self.scrcpy_path and self.ffmpeg_path),
+                "recordingAvailable": bool(self.ffmpeg_path and ios_capture_devices)
+                if is_ios_device
+                else bool(self.adb_path and self.scrcpy_path),
                 "streaming": bool(self._streams),
                 "streamingSerials": sorted({str(item["serial"]) for item in self._streams.values()}),
                 "recording": bool(self._recording_process),
                 "recordingSerial": self._recording_serial,
+                "recordingSource": self._recording_source,
                 "recordingStartedAt": int(self._recording_started_at * 1000) if self._recording_started_at else 0,
                 "lastError": self._last_error,
             }
+
+    def _validate_ios_device(self, serial: str) -> dict[str, Any]:
+        serial = serial.strip()
+        if not serial or len(serial) > 200 or any(char.isspace() for char in serial):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "iPhone/iPad 设备标识无效。")
+        if not self.xcrun_path:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "未找到 xcrun，请先安装并启动 Xcode。")
+        available = {device["serial"]: device for device in list_ios_devices(self.xcrun_path)}
+        device = available.get(serial)
+        if not device:
+            raise ApiError(HTTPStatus.NOT_FOUND, "iPhone/iPad 已断开，请刷新设备列表。")
+        if not device.get("available"):
+            raise ApiError(HTTPStatus.CONFLICT, "请解锁设备，并确认已开启开发者模式和信任这台 Mac。")
+        return device
+
+    def _discover_ios_capture_devices(self, serial: str = "") -> list[dict[str, Any]]:
+        if not self.ffmpeg_path:
+            return []
+        ios_devices = list_ios_devices(self.xcrun_path) if self.xcrun_path else []
+        selected = next((device for device in ios_devices if device["serial"] == serial), None)
+        known_names = {
+            _normalized_device_name(str(device.get("name", "")))
+            for device in ios_devices
+            if str(device.get("name", "")).strip()
+        }
+        selected_name = _normalized_device_name(str(selected.get("name", ""))) if selected else ""
+        capture_devices = list_avfoundation_video_devices(self.ffmpeg_path)
+
+        probable: list[dict[str, Any]] = []
+        external: list[dict[str, Any]] = []
+        for capture in capture_devices:
+            name = str(capture["name"])
+            normalized = _normalized_device_name(name)
+            if normalized.startswith("capturescreen"):
+                continue
+            is_internal = any(
+                marker in normalized
+                for marker in ("facetime", "macbook", "webcam", "obscamera", "virtualcamera")
+            )
+            if is_internal:
+                continue
+            selected_match = bool(
+                selected_name
+                and (normalized == selected_name or normalized in selected_name or selected_name in normalized)
+            )
+            known_match = any(
+                known_name and (normalized == known_name or normalized in known_name or known_name in normalized)
+                for known_name in known_names
+            )
+            item = {**capture, "selectedMatch": selected_match}
+            external.append(item)
+            if selected_match or known_match or "iphone" in normalized or "ipad" in normalized:
+                probable.append(item)
+        return probable or external
+
+    def _resolve_ios_capture(self, serial: str, capture_index: str = "") -> dict[str, Any]:
+        self._validate_ios_device(serial)
+        capture_devices = self._discover_ios_capture_devices(serial)
+        with self._lock:
+            self._ios_capture_devices = capture_devices
+        if not capture_devices:
+            raise ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Mac 尚未发现 iPhone/iPad 画面输入。请使用 USB 连接、解锁并信任这台 Mac，然后重新检测。",
+            )
+        requested = capture_index.strip()
+        if requested:
+            capture = next((device for device in capture_devices if device["index"] == requested), None)
+            if not capture:
+                raise ApiError(HTTPStatus.NOT_FOUND, "所选 iPhone/iPad 画面输入已变化，请重新检测。")
+            return capture
+        selected_match = next((device for device in capture_devices if device.get("selectedMatch")), None)
+        if selected_match:
+            return selected_match
+        if len(capture_devices) == 1:
+            return capture_devices[0]
+        raise ApiError(HTTPStatus.BAD_REQUEST, "检测到多个 iOS 画面输入，请先选择画面来源。")
 
     def _validate_device(self, serial: str) -> str:
         serial = serial.strip()
@@ -1243,7 +1397,51 @@ class AndroidScreenManager:
             raise ApiError(HTTPStatus.BAD_REQUEST, "实时画面码率必须在 2–20 Mbps 之间。")
         return max_fps, max_size, bit_rate
 
-    def screenshot(self, serial: str) -> bytes:
+    def screenshot(self, source: str, serial: str, capture_index: str = "") -> bytes:
+        source = validate_source(source)
+        if source == "android":
+            return self._android_screenshot(serial)
+        if source != "ios-device":
+            raise ApiError(HTTPStatus.BAD_REQUEST, "设备画面仅支持 Android 和 iPhone/iPad 真机。")
+        capture = self._resolve_ios_capture(serial, capture_index)
+        assert self.ffmpeg_path is not None
+        command = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-thread_queue_size",
+            "128",
+            "-f",
+            "avfoundation",
+            "-framerate",
+            "30",
+            "-i",
+            f"{capture['index']}:none",
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "pipe:1",
+        ]
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=25, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise ApiError(HTTPStatus.GATEWAY_TIMEOUT, "iPhone/iPad 截图超时，请检查 USB 连接。") from exc
+        except OSError as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法执行 iPhone/iPad 截图：{exc}") from exc
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip() or f"退出码 {result.returncode}"
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"iPhone/iPad 截图失败：{detail}")
+        if not result.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "iPhone/iPad 返回的截图不是有效 PNG。")
+        if len(result.stdout) > 64 * 1024 * 1024:
+            raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "iPhone/iPad 截图超过 64 MB，无法显示。")
+        return result.stdout
+
+    def _android_screenshot(self, serial: str) -> bytes:
         serial = self._validate_device(serial)
         assert self.adb_path is not None
         try:
@@ -1292,7 +1490,126 @@ class AndroidScreenManager:
             f"--video-bit-rate={bit_rate}",
         ]
 
+    @staticmethod
+    def _ios_capture_input(capture_index: str, max_fps: int) -> list[str]:
+        return [
+            "-thread_queue_size",
+            "512",
+            "-f",
+            "avfoundation",
+            "-framerate",
+            str(max_fps),
+            "-i",
+            f"{capture_index}:none",
+        ]
+
+    @staticmethod
+    def _ios_encode_options(max_fps: int, max_size: int, bit_rate: int) -> list[str]:
+        return [
+            "-map",
+            "0:v:0",
+            "-an",
+            "-vf",
+            f"scale={max_size}:{max_size}:force_original_aspect_ratio=decrease:force_divisible_by=2,format=nv12",
+            "-c:v",
+            "h264_videotoolbox",
+            "-allow_sw",
+            "1",
+            "-realtime",
+            "1",
+            "-profile:v",
+            "high",
+            "-level:v",
+            "4.2",
+            "-b:v",
+            str(bit_rate),
+            "-maxrate",
+            str(bit_rate),
+            "-bufsize",
+            str(bit_rate * 2),
+            "-g",
+            str(max_fps * 2),
+            "-bf",
+            "0",
+        ]
+
     def start_stream(
+        self,
+        source: str,
+        serial: str,
+        max_fps: int,
+        max_size: int,
+        bit_rate: int,
+        capture_index: str = "",
+    ) -> tuple[str, subprocess.Popen[Any]]:
+        source = validate_source(source)
+        if source == "android":
+            return self._start_android_stream(serial, max_fps, max_size, bit_rate)
+        if source == "ios-device":
+            return self._start_ios_stream(serial, max_fps, max_size, bit_rate, capture_index)
+        raise ApiError(HTTPStatus.BAD_REQUEST, "设备画面仅支持 Android 和 iPhone/iPad 真机。")
+
+    def _start_ios_stream(
+        self,
+        serial: str,
+        max_fps: int,
+        max_size: int,
+        bit_rate: int,
+        capture_index: str,
+    ) -> tuple[str, subprocess.Popen[Any]]:
+        max_fps, max_size, bit_rate = self.validate_quality(max_fps, max_size, bit_rate)
+        capture = self._resolve_ios_capture(serial, capture_index)
+        assert self.ffmpeg_path is not None
+        self.stop_streams(serial)
+        ffmpeg_log: list[str] = []
+        command = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            *self._ios_capture_input(str(capture["index"]), max_fps),
+            *self._ios_encode_options(max_fps, max_size, bit_rate),
+            "-movflags",
+            "empty_moov+default_base_moof+frag_every_frame",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法启动 iPhone/iPad 画面捕获：{exc}") from exc
+        threading.Thread(
+            target=_drain_process_pipe,
+            args=(process.stderr, ffmpeg_log),
+            name="ios-screen-ffmpeg-log",
+            daemon=True,
+        ).start()
+        time.sleep(0.7)
+        if process.poll() is not None:
+            detail = "；".join(ffmpeg_log[-5:]) or f"退出码 {process.returncode}"
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"iPhone/iPad 实时画面启动失败：{detail}")
+
+        token = secrets.token_urlsafe(18)
+        with self._lock:
+            self._streams[token] = {
+                "source": "ios-device",
+                "serial": serial,
+                "captureIndex": str(capture["index"]),
+                "ffmpeg": process,
+            }
+            self._last_error = ""
+        return token, process
+
+    def _start_android_stream(
         self,
         serial: str,
         max_fps: int,
@@ -1417,6 +1734,22 @@ class AndroidScreenManager:
 
     def start_recording(
         self,
+        source: str,
+        serial: str,
+        max_fps: int,
+        max_size: int,
+        bit_rate: int,
+        capture_index: str = "",
+    ) -> dict[str, Any]:
+        source = validate_source(source)
+        if source == "android":
+            return self._start_android_recording(serial, max_fps, max_size, bit_rate)
+        if source == "ios-device":
+            return self._start_ios_recording(serial, max_fps, max_size, bit_rate, capture_index)
+        raise ApiError(HTTPStatus.BAD_REQUEST, "设备画面录制仅支持 Android 和 iPhone/iPad 真机。")
+
+    def _start_android_recording(
+        self,
         serial: str,
         max_fps: int,
         max_size: int,
@@ -1467,10 +1800,78 @@ class AndroidScreenManager:
             self._recording_process = process
             self._recording_path = recording_path
             self._recording_serial = serial
+            self._recording_source = "android"
             self._recording_started_at = started_at
             self._recording_log = recording_log
             self._last_error = ""
-        return self.status()
+        return self.status("android")
+
+    def _start_ios_recording(
+        self,
+        serial: str,
+        max_fps: int,
+        max_size: int,
+        bit_rate: int,
+        capture_index: str,
+    ) -> dict[str, Any]:
+        max_fps, max_size, bit_rate = self.validate_quality(max_fps, max_size, bit_rate)
+        capture = self._resolve_ios_capture(serial, capture_index)
+        assert self.ffmpeg_path is not None
+        with self._lock:
+            self._reap_recording_locked()
+            if self._recording_process:
+                raise ApiError(HTTPStatus.CONFLICT, "已有手机录屏正在进行，请先停止。")
+
+        file_descriptor, temp_name = tempfile.mkstemp(prefix="device-log-viewer-ios-screen-", suffix=".mp4")
+        os.close(file_descriptor)
+        recording_path = Path(temp_name)
+        recording_path.unlink(missing_ok=True)
+        command = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            *self._ios_capture_input(str(capture["index"]), max_fps),
+            *self._ios_encode_options(max_fps, max_size, bit_rate),
+            "-movflags",
+            "+faststart",
+            "-y",
+            str(recording_path),
+        ]
+        recording_log: list[str] = []
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            recording_path.unlink(missing_ok=True)
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法启动 iPhone/iPad 录屏：{exc}") from exc
+        threading.Thread(
+            target=_drain_process_pipe,
+            args=(process.stderr, recording_log),
+            name="ios-screen-recording-log",
+            daemon=True,
+        ).start()
+        time.sleep(0.7)
+        if process.poll() is not None:
+            recording_path.unlink(missing_ok=True)
+            detail = "；".join(recording_log[-5:]) or f"退出码 {process.returncode}"
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"iPhone/iPad 录屏启动失败：{detail}")
+
+        started_at = time.time()
+        with self._lock:
+            self._recording_process = process
+            self._recording_path = recording_path
+            self._recording_serial = serial
+            self._recording_source = "ios-device"
+            self._recording_started_at = started_at
+            self._recording_log = recording_log
+            self._last_error = ""
+        return self.status("ios-device")
 
     def stop_recording(self) -> dict[str, Any]:
         with self._lock:
@@ -1478,6 +1879,7 @@ class AndroidScreenManager:
             process = self._recording_process
             recording_path = self._recording_path
             serial = self._recording_serial
+            source = self._recording_source or "android"
             started_at = self._recording_started_at
             recording_log = self._recording_log
             if not process or not recording_path:
@@ -1485,6 +1887,7 @@ class AndroidScreenManager:
             self._recording_process = None
             self._recording_path = None
             self._recording_serial = ""
+            self._recording_source = ""
             self._recording_started_at = 0.0
             self._recording_log = []
 
@@ -1499,8 +1902,9 @@ class AndroidScreenManager:
             raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "手机录屏超过 4 GB，已停止下载。")
 
         token = secrets.token_urlsafe(24)
-        safe_serial = re.sub(r"[^A-Za-z0-9._-]+", "-", serial) or "android"
-        filename = f"android-screen-{safe_serial}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
+        platform_name = "ios" if source == "ios-device" else "android"
+        safe_serial = re.sub(r"[^A-Za-z0-9._-]+", "-", serial) or platform_name
+        filename = f"{platform_name}-screen-{safe_serial}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
         with self._lock:
             self._downloads[token] = {
                 "path": recording_path,
@@ -1513,7 +1917,7 @@ class AndroidScreenManager:
             "filename": filename,
             "fileSize": file_size,
             "durationSeconds": max(0, round(time.time() - started_at, 1)),
-            "status": self.status(),
+            "status": self.status(source),
         }
 
     def recording_download(self, token: str) -> tuple[Path, str]:
@@ -1543,6 +1947,9 @@ class AndroidScreenManager:
             path = self._recording_path
             self._recording_process = None
             self._recording_path = None
+            self._recording_serial = ""
+            self._recording_source = ""
+            self._recording_started_at = 0.0
             downloads = tuple(self._downloads.values())
             self._downloads.clear()
         _terminate_process_group(process, signal.SIGINT, timeout=8)
@@ -2063,7 +2470,7 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
         return self.server.manager  # type: ignore[attr-defined]
 
     @property
-    def screen(self) -> AndroidScreenManager:
+    def screen(self) -> DeviceScreenManager:
         return self.server.screen  # type: ignore[attr-defined]
 
     @property
@@ -2101,7 +2508,7 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
             bit_rate = int(values.get("bitRate", ["12000000"])[0])
         except ValueError as exc:
             raise ApiError(HTTPStatus.BAD_REQUEST, "实时画面质量参数无效。") from exc
-        return AndroidScreenManager.validate_quality(max_fps, max_size, bit_rate)
+        return DeviceScreenManager.validate_quality(max_fps, max_size, bit_rate)
 
     @staticmethod
     def _websocket_frame(payload: bytes, opcode: int = 0x2) -> bytes:
@@ -2121,9 +2528,18 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.BAD_REQUEST, "WebSocket 握手参数无效。")
 
         query = parse_qs(parsed_url.query)
+        source = validate_source(query.get("source", ["android"])[0])
         serial = query.get("serial", [""])[0]
+        capture_index = query.get("captureIndex", [""])[0]
         max_fps, max_size, bit_rate = self._screen_quality(query)
-        token, ffmpeg_process = self.screen.start_stream(serial, max_fps, max_size, bit_rate)
+        token, ffmpeg_process = self.screen.start_stream(
+            source,
+            serial,
+            max_fps,
+            max_size,
+            bit_rate,
+            capture_index,
+        )
         accept_source = f"{websocket_key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11".encode("ascii")
         websocket_accept = base64.b64encode(hashlib.sha1(accept_source).digest()).decode("ascii")
 
@@ -2154,16 +2570,19 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
     def _send_recording(self, token: str) -> None:
         recording_path, filename = self.screen.recording_download(token)
         try:
-            file_size = recording_path.stat().st_size
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "video/mp4")
-            self.send_header("Content-Length", str(file_size))
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            with recording_path.open("rb") as recording:
-                shutil.copyfileobj(recording, self.wfile, length=1024 * 1024)
+            try:
+                file_size = recording_path.stat().st_size
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(file_size))
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                with recording_path.open("rb") as recording:
+                    shutil.copyfileobj(recording, self.wfile, length=1024 * 1024)
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                pass
         finally:
             self.screen.discard_download(token)
 
@@ -2264,13 +2683,21 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
                     apps = list_ios_device_apps(self.manager.xcrun_path, serial)
                 self._send_json({"ok": True, "apps": apps, "packages": [app["id"] for app in apps]})
             elif path == "/api/screen/status":
-                self._send_json({"ok": True, "status": self.screen.status()})
+                source = validate_source(parse_qs(parsed_url.query).get("source", ["android"])[0])
+                self._send_json({"ok": True, "status": self.screen.status(source)})
             elif path == "/api/screen/screenshot":
                 query = parse_qs(parsed_url.query)
+                source = validate_source(query.get("source", ["android"])[0])
                 serial = query.get("serial", [""])[0]
-                safe_serial = re.sub(r"[^A-Za-z0-9._-]+", "-", serial) or "android"
-                filename = f"android-screen-{safe_serial}-{time.strftime('%Y%m%d-%H%M%S')}.png"
-                self._send_binary(self.screen.screenshot(serial), "image/png", filename)
+                capture_index = query.get("captureIndex", [""])[0]
+                platform_name = "ios" if source == "ios-device" else "android"
+                safe_serial = re.sub(r"[^A-Za-z0-9._-]+", "-", serial) or platform_name
+                filename = f"{platform_name}-screen-{safe_serial}-{time.strftime('%Y%m%d-%H%M%S')}.png"
+                self._send_binary(
+                    self.screen.screenshot(source, serial, capture_index),
+                    "image/png",
+                    filename,
+                )
             elif path == "/api/screen/recording":
                 token = parse_qs(parsed_url.query).get("token", [""])[0]
                 self._send_recording(token)
@@ -2346,7 +2773,12 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
                     {
                         "ok": True,
                         "status": status,
-                        "screenStatus": self.screen.refresh_tools(self.manager.adb_path),
+                        "screenStatus": self.screen.refresh_tools(
+                            self.manager.adb_path,
+                            self.manager.xcrun_path,
+                            source,
+                            str(payload.get("serial", "")),
+                        ),
                     }
                 )
             elif path == "/api/screen/record/start":
@@ -2357,16 +2789,29 @@ class DeviceLogRequestHandler(BaseHTTPRequestHandler):
                 }
                 max_fps, max_size, bit_rate = self._screen_quality(quality)
                 status = self.screen.start_recording(
+                    str(payload.get("source", "android")),
                     str(payload.get("serial", "")),
                     max_fps,
                     max_size,
                     bit_rate,
+                    str(payload.get("captureIndex", "")),
                 )
                 self._send_json({"ok": True, "status": status})
             elif path == "/api/screen/record/stop":
                 self._send_json({"ok": True, **self.screen.stop_recording()})
             elif path == "/api/screen/refresh":
-                self._send_json({"ok": True, "status": self.screen.refresh_tools(self.manager.adb_path)})
+                source = validate_source(str(payload.get("source", "android")))
+                self._send_json(
+                    {
+                        "ok": True,
+                        "status": self.screen.refresh_tools(
+                            self.manager.adb_path,
+                            self.manager.xcrun_path,
+                            source,
+                            str(payload.get("serial", "")),
+                        ),
+                    }
+                )
             elif path == "/api/stop":
                 self._send_json({"ok": True, "status": self.manager.stop()})
             elif path == "/api/clear-device":
@@ -2417,7 +2862,7 @@ class DeviceLogHttpServer(ThreadingHTTPServer):
         self,
         address: tuple[str, int],
         manager: LogcatManager,
-        screen: AndroidScreenManager,
+        screen: DeviceScreenManager,
         profile: dict[str, Any],
     ) -> None:
         self.manager = manager
@@ -2465,7 +2910,7 @@ def main() -> int:
     adb_path = find_adb(args.adb)
     xcrun_path = find_xcrun()
     manager = LogcatManager(adb_path, xcrun_path)
-    screen = AndroidScreenManager(adb_path)
+    screen = DeviceScreenManager(adb_path, xcrun_path)
     try:
         server = DeviceLogHttpServer((args.host, port), manager, screen, profile)
     except OSError as exc:

@@ -7,8 +7,8 @@
 ## 主要功能
 
 - 实时查看 Android、iOS 模拟器和 iPhone/iPad 真机日志。
-- 在网页中以 H.264 低延迟串流查看 Android 手机画面，支持 30/60 FPS 档位。
-- 一键截取 Android 手机 PNG，并通过 `scrcpy` 录制原始质量 MP4。
+- 在网页中以 H.264 低延迟串流查看 Android 和 iPhone/iPad 真机画面，支持 30/60 FPS 档位。
+- 一键截取手机 PNG，并把 Android 或 iOS 真机画面录制为 MP4。
 - Android 可只看指定 App；App 被杀后仍保持 Logcat 连接，重新启动 App 时自动跟踪新 PID。
 - 自动读取设备上已安装的第三方 App，也支持手动输入包名或 Bundle ID。
 - 按关键词及 `V / D / I / W / E / F` 日志级别筛选。
@@ -30,6 +30,7 @@
 | Android 日志与装包 | Android Platform Tools（`adb`） |
 | Android 流畅画面与录屏 | `scrcpy`；网页实时播放还需要 `ffmpeg` |
 | iOS 日志与装包 | 完整版 Xcode（`xcrun simctl`、`devicectl`） |
+| iPhone/iPad 真机画面与录屏 | USB 数据线、Xcode、`ffmpeg`（AVFoundation + VideoToolbox） |
 | 远程链接安装 | 无需登录即可访问的公网 HTTP(S) 分发地址 |
 
 Unity 项目不是运行依赖。只有随附的 Profile 生成器会只读扫描 Unity `ProjectSettings` 和源码中的埋点标记。
@@ -71,6 +72,8 @@ iOS：
 1. 安装并至少启动过一次 Xcode。
 2. 真机需要解锁、信任当前 Mac，并开启开发者模式。
 3. 先在 Xcode 的 **Devices and Simulators** 中确认设备可见。
+4. 查看真机画面时必须使用 USB 数据线；仅通过 Wi-Fi 配对无法提供 AVFoundation 画面输入。
+5. 若 macOS 请求相机访问权限，请允许启动工具的 Terminal 使用相机。
 
 ### 3. 启动
 
@@ -130,6 +133,17 @@ iOS 模拟器指定 App 模式和 iPhone/iPad 真机模式，需要通过 Xcode 
 实时预览使用 `scrcpy` 在 Android 设备端编码 H.264，由本机 `ffmpeg` 无损转换为浏览器可播放的 fragmented MP4，并通过本地 WebSocket 传输。它不是连续截图，因此延迟、CPU 和 USB 带宽占用明显低于高帧率图片方案。
 
 实时预览和录屏可以同时运行，此时手机可能同时使用两个视频编码会话。低端设备如果出现编码失败、发热或卡顿，请停止录屏，或改用“均衡 / 省流”档位。受 Android 安全策略保护的 `FLAG_SECURE` 页面和 DRM 内容可能显示为黑屏。
+
+### 查看、截图和录制 iPhone/iPad 真机画面
+
+1. 使用 USB 数据线连接并解锁 iPhone/iPad，确认设备已信任这台 Mac。
+2. 在日志来源中选择 `iPhone / iPad` 和目标真机，然后点击“设备画面”。
+3. 工具会通过 macOS AVFoundation 查找画面输入；检测到多个输入时，选择与目标设备对应的名称。
+4. 选择画质后点击“开始实时画面”。截图会下载 PNG；停止录屏后会下载 H.264 MP4。
+
+iOS 真机画面由 `ffmpeg` 读取 macOS AVFoundation 输入，并使用 VideoToolbox 硬件编码为浏览器可播放的 H.264 fragmented MP4。画面只在本机 `127.0.0.1` 服务中传输，不会上传到网络。
+
+部分 macOS/iOS 版本只允许一个进程占用同一画面输入。如果同时预览和录屏失败，请先停止实时画面再开始录屏；录屏完成后再恢复预览。
 
 ### 安装 Android APK
 
@@ -317,6 +331,14 @@ brew install scrcpy ffmpeg
 - 停止其他正在运行的 `scrcpy` 或手机录屏程序。
 - 更换数据线或 USB 接口，避免只支持充电的线材。
 - 旋转手机后如果画面尺寸没有正确更新，停止并重新开始实时画面。
+
+### iPhone/iPad 日志可用，但“设备画面”提示未发现输入
+
+- 必须使用可传输数据的 USB 线；`devicectl` 通过 Wi-Fi 显示“已连接”并不代表 AVFoundation 可以读取画面。
+- 解锁设备，重新确认“信任这台电脑”，并保持设备停留在亮屏状态。
+- 打开 **系统设置 → 隐私与安全性 → 相机**，允许启动工具的 Terminal 访问视频输入。
+- 关闭 QuickTime Player、OBS、会议软件等可能占用 iPhone/iPad 画面的程序，再点击“重新检测工具”。
+- 拔插数据线后重新打开“设备画面”。
 
 ### Android 设备显示 `unauthorized`
 
