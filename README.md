@@ -30,7 +30,7 @@
 | Android 日志与装包 | Android Platform Tools（`adb`） |
 | Android 流畅画面与录屏 | `scrcpy`；网页实时播放还需要 `ffmpeg` |
 | iOS 日志与装包 | 完整版 Xcode（`xcrun simctl`、`devicectl`） |
-| iPhone/iPad 真机画面与录屏 | USB 数据线、Xcode、`ffmpeg`（AVFoundation + VideoToolbox） |
+| iPhone/iPad 真机画面与录屏 | USB 数据线、Xcode、QuickTime Player、`ffmpeg`；工具会按系统能力使用 AVFoundation，或 QuickTime + ScreenCaptureKit |
 | 远程链接安装 | 无需登录即可访问的公网 HTTP(S) 分发地址 |
 
 Unity 项目不是运行依赖。只有随附的 Profile 生成器会只读扫描 Unity `ProjectSettings` 和源码中的埋点标记。
@@ -72,8 +72,9 @@ iOS：
 1. 安装并至少启动过一次 Xcode。
 2. 真机需要解锁、信任当前 Mac，并开启开发者模式。
 3. 先在 Xcode 的 **Devices and Simulators** 中确认设备可见。
-4. 查看真机画面时必须使用 USB 数据线；仅通过 Wi-Fi 配对无法提供 AVFoundation 画面输入。
-5. 若 macOS 请求相机访问权限，请允许启动工具的 Terminal 使用相机。
+4. 查看真机画面时必须使用 USB 数据线；仅通过 Wi-Fi 配对无法提供真机画面输入。
+5. 首次使用时，按系统提示允许 Terminal 控制 QuickTime Player，并允许 **Device Log Viewer Capture** 录制屏幕。
+6. 如果系统使用 AVFoundation 采集并请求相机权限，请允许启动工具的 Terminal 使用相机。
 
 ### 3. 启动
 
@@ -138,10 +139,17 @@ iOS 模拟器指定 App 模式和 iPhone/iPad 真机模式，需要通过 Xcode 
 
 1. 使用 USB 数据线连接并解锁 iPhone/iPad，确认设备已信任这台 Mac。
 2. 在日志来源中选择 `iPhone / iPad` 和目标真机，然后点击“设备画面”。
-3. 工具会通过 macOS AVFoundation 查找画面输入；检测到多个输入时，选择与目标设备对应的名称。
+3. 工具会自动选择当前系统可用的采集方式；检测到多个输入时，选择与目标设备对应的名称。
 4. 选择画质后点击“开始实时画面”。截图会下载 PNG；停止录屏后会下载 H.264 MP4。
 
-iOS 真机画面由 `ffmpeg` 读取 macOS AVFoundation 输入，并使用 VideoToolbox 硬件编码为浏览器可播放的 H.264 fragmented MP4。画面只在本机 `127.0.0.1` 服务中传输，不会上传到网络。
+iOS 真机画面优先使用 macOS AVFoundation 输入；在不再向 AVFoundation 暴露 iPhone 画面的系统版本（包括 macOS 26）上，工具会自动打开 QuickTime 原生真机预览，再通过随附的 ScreenCaptureKit 组件捕获窗口。两种方式都会使用 `ffmpeg` 和 VideoToolbox 编码为浏览器可播放的 H.264 fragmented MP4。画面只在本机 `127.0.0.1` 服务中传输，不会上传到网络。
+
+QuickTime 方式下，请保持手机解锁、亮屏并连接 USB，也不要关闭工具自动打开的 QuickTime 预览窗口。首次使用需要在 **系统设置 → 隐私与安全性** 中开启：
+
+- **辅助功能**：允许启动 `start.command` 的 Terminal 控制 QuickTime Player。
+- **屏幕与系统音频录制**：允许 **Device Log Viewer Capture** 捕获 QuickTime 预览窗口。
+
+修改权限后请退出并重新运行 `start.command`。
 
 部分 macOS/iOS 版本只允许一个进程占用同一画面输入。如果同时预览和录屏失败，请先停止实时画面再开始录屏；录屏完成后再恢复预览。
 
@@ -334,10 +342,12 @@ brew install scrcpy ffmpeg
 
 ### iPhone/iPad 日志可用，但“设备画面”提示未发现输入
 
-- 必须使用可传输数据的 USB 线；`devicectl` 通过 Wi-Fi 显示“已连接”并不代表 AVFoundation 可以读取画面。
+- 必须使用可传输数据的 USB 线；`devicectl` 通过 Wi-Fi 显示“已连接”并不代表可以读取真机画面。
 - 解锁设备，重新确认“信任这台电脑”，并保持设备停留在亮屏状态。
-- 打开 **系统设置 → 隐私与安全性 → 相机**，允许启动工具的 Terminal 访问视频输入。
-- 关闭 QuickTime Player、OBS、会议软件等可能占用 iPhone/iPad 画面的程序，再点击“重新检测工具”。
+- 如果页面提示 QuickTime 权限不足，打开 **系统设置 → 隐私与安全性 → 辅助功能**，允许启动工具的 Terminal 控制 QuickTime Player。
+- 如果页面提示屏幕录制权限不足，打开 **系统设置 → 隐私与安全性 → 屏幕与系统音频录制**，允许 **Device Log Viewer Capture**。
+- 如果页面显示 AVFoundation 采集方式，打开 **系统设置 → 隐私与安全性 → 相机**，允许启动工具的 Terminal 访问视频输入。
+- QuickTime 采集方式下不要关闭工具自动打开的真机预览窗口；AVFoundation 方式下则关闭 QuickTime、OBS、会议软件等可能占用输入的程序。
 - 拔插数据线后重新打开“设备画面”。
 
 ### Android 设备显示 `unauthorized`
@@ -383,6 +393,10 @@ DeviceLogViewer/
 ├── server.py
 ├── index.html
 ├── start.command
+├── native/
+│   ├── DeviceLogViewerCapture.swift
+│   ├── DeviceLogViewerCapture-Info.plist
+│   └── prepare_quicktime_capture.applescript
 ├── OpenDeviceLogViewerFolder.app
 ├── profiles/
 │   ├── default.json

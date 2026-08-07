@@ -3,6 +3,11 @@ set -eu
 
 viewer_dir="${0:A:h}"
 helper_app="$viewer_dir/OpenDeviceLogViewerFolder.app"
+capture_source="$viewer_dir/native/DeviceLogViewerCapture.swift"
+capture_info="$viewer_dir/native/DeviceLogViewerCapture-Info.plist"
+capture_app="$viewer_dir/.runtime/DeviceLogViewerCapture.app"
+capture_executable="$capture_app/Contents/MacOS/DeviceLogViewerCapture"
+capture_module_cache="$viewer_dir/.runtime/ModuleCache"
 launch_services_register="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 profile_path="${1:-$viewer_dir/profiles/default.json}"
 
@@ -26,6 +31,21 @@ fi
 
 if [[ -d "$helper_app" && -x "$launch_services_register" ]]; then
   "$launch_services_register" -f "$helper_app" >/dev/null 2>&1 || true
+fi
+
+if [[ "$(/usr/bin/uname -s)" == "Darwin" && -f "$capture_source" && -f "$capture_info" && -x /usr/bin/xcrun ]]; then
+  if [[ ! -x "$capture_executable" || "$capture_source" -nt "$capture_executable" || "$capture_info" -nt "$capture_executable" ]]; then
+    echo "正在准备 iPhone/iPad 原生画面组件…"
+    /bin/mkdir -p "$capture_app/Contents/MacOS" "$capture_module_cache"
+    /bin/cp "$capture_info" "$capture_app/Contents/Info.plist"
+    if env CLANG_MODULE_CACHE_PATH="$capture_module_cache" SWIFT_MODULECACHE_PATH="$capture_module_cache" \
+      /usr/bin/xcrun swiftc -parse-as-library "$capture_source" -o "$capture_executable" \
+      && /usr/bin/codesign --force --sign - --identifier com.candyalla.devicelogviewer.capture "$capture_app" >/dev/null; then
+      echo "iPhone/iPad 原生画面组件已就绪。"
+    else
+      echo "警告：iPhone/iPad 原生画面组件构建失败；日志、装包和 Android 功能仍可使用。"
+    fi
+  fi
 fi
 
 listener_pid() {

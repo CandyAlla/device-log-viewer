@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>DeviceLogViewerCapture</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.candyalla.devicelogviewer.capture</string>
+  <key>CFBundleName</key>
+  <string>Device Log Viewer Capture</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.3.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>读取 QuickTime 中已连接 iPhone 或 iPad 的预览窗口，并显示在本机网页中。</string>
+</dict>
+</plist>

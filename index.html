@@ -845,6 +845,8 @@
         ffmpegAvailable: false,
         iosCaptureDevices: [],
         iosCaptureAvailable: false,
+        iosCaptureHelperAvailable: false,
+        iosCaptureBackend: "",
         liveAvailable: false,
         recordingAvailable: false,
         recording: false,
@@ -1039,11 +1041,21 @@
           elements.screenPlaceholder.querySelector("strong").textContent = "未找到 ffmpeg";
           elements.screenPlaceholder.querySelector("span").textContent = "执行 brew install ffmpeg 后重新检测，即可捕获 iPhone/iPad 画面。";
         } else if (isIosDevice && !screenToolStatus.iosCaptureAvailable) {
-          elements.screenPlaceholder.querySelector("strong").textContent = "未发现 iPhone/iPad 画面输入";
-          elements.screenPlaceholder.querySelector("span").textContent = "请使用 USB 连接、解锁并信任这台 Mac，然后重新打开设备画面。";
+          const detail = screenToolStatus.lastError || "请使用 USB 连接、解锁并信任这台 Mac，然后重新打开设备画面。";
+          const title = detail.includes("屏幕录制权限")
+            ? "需要开启屏幕录制权限"
+            : detail.includes("辅助功能")
+              ? "需要开启辅助功能权限"
+              : detail.includes("QuickTime")
+                ? "QuickTime 暂未发现真机画面"
+                : "未发现 iPhone/iPad 画面输入";
+          elements.screenPlaceholder.querySelector("strong").textContent = title;
+          elements.screenPlaceholder.querySelector("span").textContent = detail;
         } else if (isIosDevice) {
           elements.screenPlaceholder.querySelector("strong").textContent = "打开 iPhone/iPad 实时画面";
-          elements.screenPlaceholder.querySelector("span").textContent = "使用 macOS AVFoundation 捕获；画面和文件只在本机处理。";
+          elements.screenPlaceholder.querySelector("span").textContent = screenToolStatus.iosCaptureBackend === "quicktime"
+            ? "使用 QuickTime 原生真机预览与 ScreenCaptureKit 捕获；画面和文件只在本机处理。"
+            : "使用 macOS AVFoundation 捕获；画面和文件只在本机处理。";
         } else if (!screenToolStatus.adbAvailable) {
           elements.screenPlaceholder.querySelector("strong").textContent = "未找到 adb";
           elements.screenPlaceholder.querySelector("span").textContent = "请先安装 Android Platform Tools，然后重新检测工具。";
@@ -1083,9 +1095,10 @@
           });
           updateScreenToolStatus(status);
           if (source === "ios-device" && !status.iosCaptureAvailable) {
-            setScreenMessage("未发现 iPhone/iPad 画面输入；请确认 USB 连接、解锁和信任状态。", "error");
+            setScreenMessage(status.lastError || "未发现 iPhone/iPad 画面输入；请确认 USB 连接、解锁和信任状态。", "error");
           } else if (source === "ios-device" && status.liveAvailable) {
-            setScreenMessage("iPhone/iPad 画面输入与 ffmpeg 已就绪", "success");
+            const backendLabel = status.iosCaptureBackend === "quicktime" ? "QuickTime 原生画面" : "AVFoundation 画面输入";
+            setScreenMessage(`${backendLabel}与 ffmpeg 已就绪`, "success");
           } else if (!status.liveAvailable) {
             const missing = [!status.scrcpyAvailable ? "scrcpy" : "", !status.ffmpegAvailable ? "ffmpeg" : ""].filter(Boolean).join("、");
             if (missing) setScreenMessage(`缺少 ${missing}；截图仍可使用，流畅画面需要安装依赖。`, "error");

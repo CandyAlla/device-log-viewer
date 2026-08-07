@@ -57,11 +57,13 @@ ANDROID_THREADTIME_LINE = re.compile(
     r"^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+(\d+)\s+\d+\s+[VDIWEF]\s+"
 )
 TOOL_ID = "device-log-viewer"
-TOOL_VERSION = "1.2.0"
+TOOL_VERSION = "1.3.0"
 PROFILE_SCHEMA_VERSION = 1
 ANALYTICS_PARSERS = {"plain", "gamefoundation-eventlog"}
 SCREEN_MAX_RECORDING_BYTES = 4 * 1024 * 1024 * 1024
 SCREEN_STREAM_CHUNK_BYTES = 32 * 1024
+IOS_CAPTURE_HELPER = APP_DIR / ".runtime" / "DeviceLogViewerCapture.app" / "Contents" / "MacOS" / "DeviceLogViewerCapture"
+IOS_QUICKTIME_SCRIPT = APP_DIR / "native" / "prepare_quicktime_capture.applescript"
 
 
 class ApiError(RuntimeError):
@@ -1149,6 +1151,21 @@ def _drain_process_pipe(pipe: Any, output: list[str]) -> None:
             pass
 
 
+def _write_process_pipe_to_file(pipe: Any, path: Path, output: list[str]) -> None:
+    if pipe is None:
+        return
+    try:
+        with path.open("wb") as destination:
+            shutil.copyfileobj(pipe, destination, length=1024 * 1024)
+    except (OSError, ValueError) as exc:
+        output.append(f"录屏文件写入失败：{exc}")
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
 def list_avfoundation_video_devices(ffmpeg_path: str | None) -> list[dict[str, str]]:
     if not ffmpeg_path:
         raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "未找到 ffmpeg，请先执行 brew install ffmpeg。")
@@ -1191,6 +1208,82 @@ def list_avfoundation_video_devices(ffmpeg_path: str | None) -> list[dict[str, s
     return devices
 
 
+def prepare_quicktime_capture(device_name: str) -> str:
+    device_name = device_name.strip()
+    if not device_name or len(device_name) > 200:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "iPhone/iPad 名称无效。")
+    if not IOS_QUICKTIME_SCRIPT.is_file():
+        raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "缺少 QuickTime 真机画面脚本，请重新下载完整工具。")
+    try:
+        result = subprocess.run(
+            ["/usr/bin/osascript", str(IOS_QUICKTIME_SCRIPT), device_name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ApiError(HTTPStatus.GATEWAY_TIMEOUT, "打开 QuickTime 真机预览超时，请保持手机解锁和亮屏。") from exc
+    except OSError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法打开 QuickTime 真机预览：{exc}") from exc
+
+    if result.returncode == 0:
+        return result.stdout.strip()
+    detail = "；".join(value.strip() for value in (result.stderr, result.stdout) if value.strip())
+    if "QUICKTIME_DEVICE_NOT_FOUND" in detail:
+        raise ApiError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            f"QuickTime 暂未发现 {device_name}。请保持手机解锁和亮屏，重新插拔 USB 后再检测。",
+        )
+    if "not allowed assistive access" in detail.casefold() or "不允许辅助访问" in detail:
+        raise ApiError(
+            HTTPStatus.FORBIDDEN,
+            "需要允许终端控制 QuickTime：系统设置 → 隐私与安全性 → 辅助功能，然后重新启动 start.command。",
+        )
+    raise ApiError(HTTPStatus.BAD_GATEWAY, f"QuickTime 真机预览启动失败：{detail or result.returncode}")
+
+
+def list_quicktime_capture_windows() -> list[dict[str, Any]]:
+    if not IOS_CAPTURE_HELPER.is_file() or not os.access(IOS_CAPTURE_HELPER, os.X_OK):
+        raise ApiError(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "iPhone/iPad 原生画面组件尚未就绪，请关闭服务后重新运行 start.command。",
+        )
+    try:
+        result = subprocess.run(
+            [str(IOS_CAPTURE_HELPER), "list"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ApiError(HTTPStatus.GATEWAY_TIMEOUT, "读取 QuickTime 真机预览窗口超时。") from exc
+    except OSError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法运行 iPhone/iPad 原生画面组件：{exc}") from exc
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"退出码 {result.returncode}"
+        if "SCREEN_CAPTURE_PERMISSION_REQUIRED" in detail:
+            raise ApiError(
+                HTTPStatus.FORBIDDEN,
+                "需要开启屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕与系统音频录制 → Device Log Viewer Capture；开启后重新检测。",
+            )
+        raise ApiError(HTTPStatus.BAD_GATEWAY, f"读取 QuickTime 真机预览窗口失败：{detail}")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ApiError(HTTPStatus.BAD_GATEWAY, "iPhone/iPad 原生画面组件返回了无效数据。") from exc
+    windows = payload.get("windows", []) if isinstance(payload, dict) else []
+    if not isinstance(windows, list):
+        raise ApiError(HTTPStatus.BAD_GATEWAY, "iPhone/iPad 原生画面窗口列表无效。")
+    return [item for item in windows if isinstance(item, dict)]
+
+
 def _normalized_device_name(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
     return re.sub(r"[^0-9a-z\u3400-\u9fff]+", "", normalized)
@@ -1206,6 +1299,8 @@ class DeviceScreenManager:
         self._ios_capture_devices: list[dict[str, Any]] = []
         self._streams: dict[str, dict[str, Any]] = {}
         self._recording_process: subprocess.Popen[Any] | None = None
+        self._recording_capture_process: subprocess.Popen[Any] | None = None
+        self._recording_writer_thread: threading.Thread | None = None
         self._recording_path: Path | None = None
         self._recording_serial = ""
         self._recording_source = ""
@@ -1233,6 +1328,8 @@ class DeviceScreenManager:
             self.scrcpy_path = find_scrcpy()
             self.ffmpeg_path = find_ffmpeg()
         if source == "ios-device":
+            with self._lock:
+                self._last_error = ""
             capture_devices = self._discover_ios_capture_devices(serial)
             with self._lock:
                 self._ios_capture_devices = capture_devices
@@ -1242,6 +1339,13 @@ class DeviceScreenManager:
         process = self._recording_process
         if not process or process.poll() is None:
             return
+        capture_process = self._recording_capture_process
+        writer_thread = self._recording_writer_thread
+        self._recording_capture_process = None
+        self._recording_writer_thread = None
+        _terminate_process_group(capture_process)
+        if writer_thread:
+            writer_thread.join(timeout=3)
         detail = "；".join(self._recording_log[-4:])
         self._last_error = detail or f"设备画面录制意外结束（退出码 {process.returncode}）"
         if self._recording_path:
@@ -1251,6 +1355,7 @@ class DeviceScreenManager:
         self._recording_serial = ""
         self._recording_source = ""
         self._recording_started_at = 0.0
+        self._recording_log = []
 
     def _cleanup_downloads_locked(self) -> None:
         cutoff = time.time() - 60 * 60
@@ -1278,6 +1383,11 @@ class DeviceScreenManager:
                 "ffmpegPath": self.ffmpeg_path or "",
                 "iosCaptureDevices": ios_capture_devices,
                 "iosCaptureAvailable": bool(ios_capture_devices),
+                "iosCaptureHelperAvailable": IOS_CAPTURE_HELPER.is_file()
+                and os.access(IOS_CAPTURE_HELPER, os.X_OK),
+                "iosCaptureBackend": str(ios_capture_devices[0].get("backend", ""))
+                if ios_capture_devices
+                else "",
                 "liveAvailable": bool(self.ffmpeg_path and ios_capture_devices)
                 if is_ios_device
                 else bool(self.adb_path and self.scrcpy_path and self.ffmpeg_path),
@@ -1341,11 +1451,69 @@ class DeviceScreenManager:
                 known_name and (normalized == known_name or normalized in known_name or known_name in normalized)
                 for known_name in known_names
             )
-            item = {**capture, "selectedMatch": selected_match}
+            item = {**capture, "backend": "avfoundation", "selectedMatch": selected_match}
             external.append(item)
             if selected_match or known_match or "iphone" in normalized or "ipad" in normalized:
                 probable.append(item)
-        return probable or external
+        direct_devices = probable or external
+        if direct_devices:
+            with self._lock:
+                self._last_error = ""
+            return direct_devices
+
+        if not selected:
+            if serial:
+                with self._lock:
+                    self._last_error = "iPhone/iPad 已断开，请刷新设备列表。"
+            return []
+        device_name = str(selected.get("name", "")).strip()
+        if not device_name:
+            with self._lock:
+                self._last_error = "无法读取 iPhone/iPad 名称，不能启动 QuickTime 真机预览。"
+            return []
+
+        try:
+            prepare_quicktime_capture(device_name)
+            windows = list_quicktime_capture_windows()
+        except ApiError as exc:
+            with self._lock:
+                self._last_error = exc.message
+            return []
+        if not windows:
+            with self._lock:
+                self._last_error = "QuickTime 已打开真机预览，但原生画面组件尚未发现预览窗口，请重新检测。"
+            return []
+
+        def window_priority(item: dict[str, Any]) -> tuple[int, int, float]:
+            active = 1 if item.get("active") else 0
+            on_screen = 1 if item.get("onScreen") else 0
+            area = float(item.get("nativeWidth", 0) or 0) * float(item.get("nativeHeight", 0) or 0)
+            return active, on_screen, area
+
+        window = max(windows, key=window_priority)
+        try:
+            window_id = int(window.get("id", 0))
+            native_width = int(window.get("nativeWidth", 0))
+            native_height = int(window.get("nativeHeight", 0))
+        except (TypeError, ValueError):
+            window_id = native_width = native_height = 0
+        if window_id <= 0 or native_width < 2 or native_height < 2:
+            with self._lock:
+                self._last_error = "QuickTime 真机预览窗口尺寸无效，请关闭 QuickTime 后重新检测。"
+            return []
+        with self._lock:
+            self._last_error = ""
+        return [
+            {
+                "index": f"quicktime:{window_id}",
+                "windowId": window_id,
+                "name": f"{device_name} · QuickTime 原生画面",
+                "backend": "quicktime",
+                "nativeWidth": native_width,
+                "nativeHeight": native_height,
+                "selectedMatch": True,
+            }
+        ]
 
     def _resolve_ios_capture(self, serial: str, capture_index: str = "") -> dict[str, Any]:
         self._validate_ios_device(serial)
@@ -1353,14 +1521,22 @@ class DeviceScreenManager:
         with self._lock:
             self._ios_capture_devices = capture_devices
         if not capture_devices:
+            with self._lock:
+                detail = self._last_error
             raise ApiError(
                 HTTPStatus.SERVICE_UNAVAILABLE,
-                "Mac 尚未发现 iPhone/iPad 画面输入。请使用 USB 连接、解锁并信任这台 Mac，然后重新检测。",
+                detail
+                or "Mac 尚未发现 iPhone/iPad 画面输入。请使用 USB 连接、解锁并信任这台 Mac，然后重新检测。",
             )
         requested = capture_index.strip()
         if requested:
             capture = next((device for device in capture_devices if device["index"] == requested), None)
             if not capture:
+                quicktime_capture = next(
+                    (device for device in capture_devices if device.get("backend") == "quicktime"), None
+                )
+                if requested.startswith("quicktime:") and quicktime_capture:
+                    return quicktime_capture
                 raise ApiError(HTTPStatus.NOT_FOUND, "所选 iPhone/iPad 画面输入已变化，请重新检测。")
             return capture
         selected_match = next((device for device in capture_devices if device.get("selectedMatch")), None)
@@ -1404,6 +1580,8 @@ class DeviceScreenManager:
         if source != "ios-device":
             raise ApiError(HTTPStatus.BAD_REQUEST, "设备画面仅支持 Android 和 iPhone/iPad 真机。")
         capture = self._resolve_ios_capture(serial, capture_index)
+        if capture.get("backend") == "quicktime":
+            return self._quicktime_screenshot(capture)
         assert self.ffmpeg_path is not None
         command = [
             self.ffmpeg_path,
@@ -1440,6 +1618,57 @@ class DeviceScreenManager:
         if len(result.stdout) > 64 * 1024 * 1024:
             raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "iPhone/iPad 截图超过 64 MB，无法显示。")
         return result.stdout
+
+    def _quicktime_screenshot(self, capture: dict[str, Any]) -> bytes:
+        assert self.ffmpeg_path is not None
+        capture_log: list[str] = []
+        capture_process, width, height = self._start_quicktime_capture_process(
+            capture, 30, 1920, capture_log
+        )
+        assert capture_process.stdout is not None
+        command = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            *self._ios_raw_capture_input(width, height, 30),
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "pipe:1",
+        ]
+        try:
+            ffmpeg_process = subprocess.Popen(
+                command,
+                stdin=capture_process.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+            capture_process.stdout.close()
+        except OSError as exc:
+            _terminate_process_group(capture_process)
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法启动 iPhone/iPad 截图转换：{exc}") from exc
+        try:
+            image_data, ffmpeg_stderr = ffmpeg_process.communicate(timeout=25)
+        except subprocess.TimeoutExpired as exc:
+            _terminate_process_group(ffmpeg_process)
+            _terminate_process_group(capture_process)
+            raise ApiError(HTTPStatus.GATEWAY_TIMEOUT, "iPhone/iPad 截图超时，请保持手机解锁和亮屏。") from exc
+        finally:
+            _terminate_process_group(capture_process)
+        if ffmpeg_process.returncode != 0:
+            ffmpeg_detail = ffmpeg_stderr.decode("utf-8", errors="replace").strip()
+            detail = "；".join((capture_log + ([ffmpeg_detail] if ffmpeg_detail else []))[-5:])
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"iPhone/iPad 截图失败：{detail or ffmpeg_process.returncode}")
+        if not image_data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "iPhone/iPad 返回的截图不是有效 PNG。")
+        if len(image_data) > 64 * 1024 * 1024:
+            raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "iPhone/iPad 截图超过 64 MB，无法显示。")
+        return image_data
 
     def _android_screenshot(self, serial: str) -> bytes:
         serial = self._validate_device(serial)
@@ -1504,6 +1733,86 @@ class DeviceScreenManager:
         ]
 
     @staticmethod
+    def _quicktime_output_size(capture: dict[str, Any], max_size: int) -> tuple[int, int]:
+        try:
+            native_width = int(capture.get("nativeWidth", 0))
+            native_height = int(capture.get("nativeHeight", 0))
+        except (TypeError, ValueError) as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "QuickTime 真机预览尺寸无效。") from exc
+        if native_width < 2 or native_height < 2:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "QuickTime 真机预览尺寸无效。")
+        scale = min(1.0, max_size / max(native_width, native_height))
+        width = max(2, int(native_width * scale) & ~1)
+        height = max(2, int(native_height * scale) & ~1)
+        return width, height
+
+    @staticmethod
+    def _ios_raw_capture_input(width: int, height: int, max_fps: int) -> list[str]:
+        return [
+            "-thread_queue_size",
+            "512",
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "nv12",
+            "-video_size",
+            f"{width}x{height}",
+            "-framerate",
+            str(max_fps),
+            "-i",
+            "pipe:0",
+        ]
+
+    def _start_quicktime_capture_process(
+        self,
+        capture: dict[str, Any],
+        max_fps: int,
+        max_size: int,
+        capture_log: list[str],
+    ) -> tuple[subprocess.Popen[Any], int, int]:
+        if not IOS_CAPTURE_HELPER.is_file() or not os.access(IOS_CAPTURE_HELPER, os.X_OK):
+            raise ApiError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "iPhone/iPad 原生画面组件尚未就绪，请关闭服务后重新运行 start.command。",
+            )
+        try:
+            window_id = int(capture.get("windowId", 0))
+        except (TypeError, ValueError) as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "QuickTime 真机预览窗口标识无效。") from exc
+        if window_id <= 0:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, "QuickTime 真机预览窗口标识无效。")
+        width, height = self._quicktime_output_size(capture, max_size)
+        command = [
+            str(IOS_CAPTURE_HELPER),
+            "stream",
+            "--window-id",
+            str(window_id),
+            "--width",
+            str(width),
+            "--height",
+            str(height),
+            "--fps",
+            str(max_fps),
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法启动 iPhone/iPad 原生画面组件：{exc}") from exc
+        threading.Thread(
+            target=_drain_process_pipe,
+            args=(process.stderr, capture_log),
+            name="ios-quicktime-capture-log",
+            daemon=True,
+        ).start()
+        return process, width, height
+
+    @staticmethod
     def _ios_encode_options(max_fps: int, max_size: int, bit_rate: int) -> list[str]:
         return [
             "-map",
@@ -1559,6 +1868,10 @@ class DeviceScreenManager:
     ) -> tuple[str, subprocess.Popen[Any]]:
         max_fps, max_size, bit_rate = self.validate_quality(max_fps, max_size, bit_rate)
         capture = self._resolve_ios_capture(serial, capture_index)
+        if capture.get("backend") == "quicktime":
+            return self._start_ios_quicktime_stream(
+                serial, capture, max_fps, max_size, bit_rate
+            )
         assert self.ffmpeg_path is not None
         self.stop_streams(serial)
         ffmpeg_log: list[str] = []
@@ -1608,6 +1921,74 @@ class DeviceScreenManager:
             }
             self._last_error = ""
         return token, process
+
+    def _start_ios_quicktime_stream(
+        self,
+        serial: str,
+        capture: dict[str, Any],
+        max_fps: int,
+        max_size: int,
+        bit_rate: int,
+    ) -> tuple[str, subprocess.Popen[Any]]:
+        assert self.ffmpeg_path is not None
+        self.stop_streams(serial)
+        capture_log: list[str] = []
+        ffmpeg_log: list[str] = []
+        capture_process, width, height = self._start_quicktime_capture_process(
+            capture, max_fps, max_size, capture_log
+        )
+        assert capture_process.stdout is not None
+        command = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            *self._ios_raw_capture_input(width, height, max_fps),
+            *self._ios_encode_options(max_fps, max_size, bit_rate),
+            "-movflags",
+            "empty_moov+default_base_moof+frag_every_frame",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ]
+        try:
+            ffmpeg_process = subprocess.Popen(
+                command,
+                stdin=capture_process.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+            capture_process.stdout.close()
+        except OSError as exc:
+            _terminate_process_group(capture_process)
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法启动 iPhone/iPad 画面编码：{exc}") from exc
+        threading.Thread(
+            target=_drain_process_pipe,
+            args=(ffmpeg_process.stderr, ffmpeg_log),
+            name="ios-quicktime-ffmpeg-log",
+            daemon=True,
+        ).start()
+        time.sleep(0.9)
+        if capture_process.poll() is not None or ffmpeg_process.poll() is not None:
+            _terminate_process_group(ffmpeg_process)
+            _terminate_process_group(capture_process)
+            detail = "；".join((capture_log + ffmpeg_log)[-6:]) or "原生画面组件启动后立即退出。"
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"iPhone/iPad 实时画面启动失败：{detail}")
+
+        token = secrets.token_urlsafe(18)
+        with self._lock:
+            self._streams[token] = {
+                "source": "ios-device",
+                "serial": serial,
+                "captureIndex": str(capture["index"]),
+                "capture": capture_process,
+                "ffmpeg": ffmpeg_process,
+            }
+            self._last_error = ""
+        return token, ffmpeg_process
 
     def _start_android_stream(
         self,
@@ -1721,6 +2102,7 @@ class DeviceScreenManager:
             return
         _terminate_process_group(item.get("ffmpeg"))
         _terminate_process_group(item.get("scrcpy"))
+        _terminate_process_group(item.get("capture"))
 
     def stop_streams(self, serial: str = "") -> None:
         with self._lock:
@@ -1798,6 +2180,8 @@ class DeviceScreenManager:
         started_at = time.time()
         with self._lock:
             self._recording_process = process
+            self._recording_capture_process = None
+            self._recording_writer_thread = None
             self._recording_path = recording_path
             self._recording_serial = serial
             self._recording_source = "android"
@@ -1816,6 +2200,10 @@ class DeviceScreenManager:
     ) -> dict[str, Any]:
         max_fps, max_size, bit_rate = self.validate_quality(max_fps, max_size, bit_rate)
         capture = self._resolve_ios_capture(serial, capture_index)
+        if capture.get("backend") == "quicktime":
+            return self._start_ios_quicktime_recording(
+                serial, capture, max_fps, max_size, bit_rate
+            )
         assert self.ffmpeg_path is not None
         with self._lock:
             self._reap_recording_locked()
@@ -1865,6 +2253,95 @@ class DeviceScreenManager:
         started_at = time.time()
         with self._lock:
             self._recording_process = process
+            self._recording_capture_process = None
+            self._recording_writer_thread = None
+            self._recording_path = recording_path
+            self._recording_serial = serial
+            self._recording_source = "ios-device"
+            self._recording_started_at = started_at
+            self._recording_log = recording_log
+            self._last_error = ""
+        return self.status("ios-device")
+
+    def _start_ios_quicktime_recording(
+        self,
+        serial: str,
+        capture: dict[str, Any],
+        max_fps: int,
+        max_size: int,
+        bit_rate: int,
+    ) -> dict[str, Any]:
+        assert self.ffmpeg_path is not None
+        with self._lock:
+            self._reap_recording_locked()
+            if self._recording_process:
+                raise ApiError(HTTPStatus.CONFLICT, "已有手机录屏正在进行，请先停止。")
+
+        file_descriptor, temp_name = tempfile.mkstemp(prefix="device-log-viewer-ios-screen-", suffix=".mp4")
+        os.close(file_descriptor)
+        recording_path = Path(temp_name)
+        recording_path.unlink(missing_ok=True)
+        recording_log: list[str] = []
+        capture_process, width, height = self._start_quicktime_capture_process(
+            capture, max_fps, max_size, recording_log
+        )
+        assert capture_process.stdout is not None
+        command = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            *self._ios_raw_capture_input(width, height, max_fps),
+            *self._ios_encode_options(max_fps, max_size, bit_rate),
+            "-movflags",
+            "empty_moov+default_base_moof+frag_every_frame",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=capture_process.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+            capture_process.stdout.close()
+        except OSError as exc:
+            _terminate_process_group(capture_process)
+            recording_path.unlink(missing_ok=True)
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"无法启动 iPhone/iPad 录屏编码：{exc}") from exc
+        threading.Thread(
+            target=_drain_process_pipe,
+            args=(process.stderr, recording_log),
+            name="ios-quicktime-recording-log",
+            daemon=True,
+        ).start()
+        assert process.stdout is not None
+        writer_thread = threading.Thread(
+            target=_write_process_pipe_to_file,
+            args=(process.stdout, recording_path, recording_log),
+            name="ios-quicktime-recording-writer",
+            daemon=True,
+        )
+        writer_thread.start()
+        time.sleep(0.9)
+        if capture_process.poll() is not None or process.poll() is not None:
+            _terminate_process_group(process)
+            _terminate_process_group(capture_process)
+            writer_thread.join(timeout=3)
+            recording_path.unlink(missing_ok=True)
+            detail = "；".join(recording_log[-6:]) or "原生画面组件启动后立即退出。"
+            raise ApiError(HTTPStatus.BAD_GATEWAY, f"iPhone/iPad 录屏启动失败：{detail}")
+
+        started_at = time.time()
+        with self._lock:
+            self._recording_process = process
+            self._recording_capture_process = capture_process
+            self._recording_writer_thread = writer_thread
             self._recording_path = recording_path
             self._recording_serial = serial
             self._recording_source = "ios-device"
@@ -1877,6 +2354,8 @@ class DeviceScreenManager:
         with self._lock:
             self._reap_recording_locked()
             process = self._recording_process
+            capture_process = self._recording_capture_process
+            writer_thread = self._recording_writer_thread
             recording_path = self._recording_path
             serial = self._recording_serial
             source = self._recording_source or "android"
@@ -1885,13 +2364,18 @@ class DeviceScreenManager:
             if not process or not recording_path:
                 raise ApiError(HTTPStatus.CONFLICT, "当前没有正在进行的手机录屏。")
             self._recording_process = None
+            self._recording_capture_process = None
+            self._recording_writer_thread = None
             self._recording_path = None
             self._recording_serial = ""
             self._recording_source = ""
             self._recording_started_at = 0.0
             self._recording_log = []
 
+        _terminate_process_group(capture_process)
         _terminate_process_group(process, signal.SIGINT, timeout=12)
+        if writer_thread:
+            writer_thread.join(timeout=5)
         if not recording_path.is_file() or recording_path.stat().st_size < 1024:
             recording_path.unlink(missing_ok=True)
             detail = "；".join(recording_log[-5:]) or "录屏文件为空。"
@@ -1944,8 +2428,12 @@ class DeviceScreenManager:
         self.stop_streams()
         with self._lock:
             process = self._recording_process
+            capture_process = self._recording_capture_process
+            writer_thread = self._recording_writer_thread
             path = self._recording_path
             self._recording_process = None
+            self._recording_capture_process = None
+            self._recording_writer_thread = None
             self._recording_path = None
             self._recording_serial = ""
             self._recording_source = ""
@@ -1953,6 +2441,9 @@ class DeviceScreenManager:
             downloads = tuple(self._downloads.values())
             self._downloads.clear()
         _terminate_process_group(process, signal.SIGINT, timeout=8)
+        _terminate_process_group(capture_process)
+        if writer_thread:
+            writer_thread.join(timeout=3)
         if path:
             path.unlink(missing_ok=True)
         for item in downloads:
